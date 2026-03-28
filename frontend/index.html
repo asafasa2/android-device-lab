@@ -881,18 +881,30 @@ function closeModal() {
 
 async function copyAdbCmd() {
   const cmd = document.getElementById('modal-cmd').textContent;
-  try {
-    await navigator.clipboard.writeText(cmd);
-    toast('Copied to clipboard', 'ok');
-  } catch {
-    // Fallback: select the text
-    const range = document.createRange();
-    range.selectNodeContents(document.getElementById('modal-cmd'));
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    toast('Text selected — press Ctrl+C / ⌘C to copy', 'ok');
+
+  // Modern clipboard API — only works on HTTPS or localhost
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(cmd);
+      toast('Copied ✓', 'ok');
+      return;
+    } catch {}
   }
+
+  // Reliable HTTP fallback: off-screen textarea + execCommand
+  const ta = document.createElement('textarea');
+  ta.value = cmd;
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand('copy');
+    toast('Copied ✓', 'ok');
+  } catch {
+    toast('Select the text above and press ⌘C', 'err');
+  }
+  document.body.removeChild(ta);
 }
 
 // ── Toast ─────────────────────────────────────────
