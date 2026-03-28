@@ -1,0 +1,219 @@
+---
+# ansible/playbook.yml — Deploy Android Device Lab to Ubuntu 22.04 / 24.04
+#
+# Usage:
+#   ansible-playbook -i ansible/inventory.ini ansible/playbook.yml
+#   ansible-playbook -i ansible/inventory.ini ansible/playbook.yml --tags service
+#   ansible-playbook -i ansible/inventory.ini ansible/playbook.yml --check
+#
+# Requirements on the control machine:
+#   pip install ansible
+#   ansible-galaxy collection install community.general  # for ufw module
+
+- name: Deploy Android Device Lab
+  hosts: device_labs
+  become: true
+  gather_facts: true
+
+  vars:
+    # Defaults — override in inventory or with -e on the CLI
+    adb_lab_dest: /opt/android-device-lab
+    adb_lab_user: adb-lab
+    adb_lab_password: adblab123
+    adb_lab_ci_api_key: ci-key-change-me
+    adb_lab_reservation_timeout_hours: 2
+    adb_lab_device_poll_interval: 5
+    adb_lab_web_port: 8000
+    adb_lab_adb_port: 5037
+    adb_lab_open_firewall: true
+
+  tasks:
+
+    # ── 1. System packages ─────────────────────────────────────────────────────
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      tags: packages
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-venv
+          - python3-pip
+          - adb
+          - ffmpeg
+          - curl
+          - git
+          - ufw
+        state: present
+      tags: packages
+
+    # ── 2. Dedicated service user ──────────────────────────────────────────────
+    - name: Create service user {{ adb_lab_user }}
+      ansible.builtin.user:
+        name: "{{ adb_lab_user }}"
+        system: true
+        shell: /bin/bash
+        home: "{{ adb_lab_dest }}"
+        create_home: false
+        groups: plugdev
+        append: true
+        comment: "Android Device Lab service account"
+      tags: user
+
+    # ── 3. Copy project files ──────────────────────────────────────────────────
+    - name: Create destination directory
+      ansible.builtin.file:
+        path: "{{ adb_lab_dest }}"
+        state: directory
+        owner: "{{ adb_lab_user }}"
+        group: "{{ adb_lab_user }}"
+        mode: "0755"
+      tags: deploy
+
+    - name: Synchronise project files
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ adb_lab_dest }}/"
+        delete: false
+        rsync_opts:
+          - "--exclude=.venv"
+          - "--exclude=venv"
+          - "--exclude=data"
+          - "--exclude=__pycache__"
+          - "--exclude=*.pyc"
+          - "--exclude=.git"
+          - "--exclude=ansible"
+      notify: Restart adb-lab
+      tags: deploy
+
+    - name: Fix ownership of project files
+      ansible.builtin.file:
+        path: "{{ adb_lab_dest }}"
+        owner: "{{ adb_lab_user }}"
+        group: "{{ adb_lab_user }}"
+        recurse: true
+      tags: deploy
+
+    - name: Create data directory
+      ansible.builtin.file:
+        path: "{{ adb_lab_dest }}/data"
+        state: directory
+        owner: "{{ adb_lab_user }}"
+        group: "{{ adb_lab_user }}"
+        mode: "0750"
+      tags: deploy
+
+    # ── 4. Python virtual environment ─────────────────────────────────────────
+    - name: Create virtual environment
+      ansible.builtin.command:
+        cmd: python3 -m venv "{{ adb_lab_dest }}/venv"
+        creates: "{{ adb_lab_dest }}/venv/bin/python"
+      become_user: "{{ adb_lab_user }}"
+      tags: venv
+
+    - name: Install Python dependencies
+      ansible.builtin.pip:
+        requirements: "{{ adb_lab_dest }}/requirements.txt"
+        virtualenv: "{{ adb_lab_dest }}/venv"
+        virtualenv_python: python3
+        extra_args: "--quiet"
+      become_user: "{{ adb_lab_user }}"
+      notify: Restart adb-lab
+      tags: venv
+
+    # ── 5. Systemd service ─────────────────────────────────────────────────────
+    - name: Generate systemd service file
+      ansible.builtin.template:
+        src: service.j2
+        dest: /etc/systemd/system/adb-lab.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart adb-lab
+      tags: service
+
+    - name: Enable and start adb-lab service
+      ansible.builtin.systemd:
+        name: adb-lab
+        enabled: true
+        state: started
+        daemon_reload: true
+      tags: service
+
+    # ── 6. Firewall ────────────────────────────────────────────────────────────
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+        policy: deny
+      when: adb_lab_open_firewall | bool
+      tags: firewall
+
+    - name: Allow SSH (safety — always keep open)
+      community.general.ufw:
+        rule: allow
+        name: OpenSSH
+      when: adb_lab_open_firewall | bool
+      tags: firewall
+
+    - name: Allow web UI port {{ adb_lab_web_port }}
+      community.general.ufw:
+        rule: allow
+        port: "{{ adb_lab_web_port }}"
+        proto: tcp
+        comment: "Android Device Lab web UI"
+        src: "{{ adb_lab_allow_from | default('any') }}"
+      when: adb_lab_open_firewall | bool
+      tags: firewall
+
+    - name: Allow ADB port {{ adb_lab_adb_port }}
+      community.general.ufw:
+        rule: allow
+        port: "{{ adb_lab_adb_port }}"
+        proto: tcp
+        comment: "Android Device Lab ADB server"
+        src: "{{ adb_lab_allow_from | default('any') }}"
+      when: adb_lab_open_firewall | bool
+      tags: firewall
+
+    # ── 7. Verification ────────────────────────────────────────────────────────
+    - name: Wait for web UI to respond
+      ansible.builtin.uri:
+        url: "http://localhost:{{ adb_lab_web_port }}/api/status"
+        status_code: 200
+        timeout: 30
+      retries: 6
+      delay: 5
+      register: health_check
+      tags: verify
+
+    - name: Print deployment summary
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Android Device Lab deployed successfully"
+          - "  Host    : {{ inventory_hostname }}"
+          - "  Web UI  : http://{{ ansible_host }}:{{ adb_lab_web_port }}"
+          - "  ADB     : adb -H {{ ansible_host }} -P {{ adb_lab_adb_port }} devices"
+          - "  Status  : {{ health_check.json.ok }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      tags: verify
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart adb-lab
+      ansible.builtin.systemd:
+        name: adb-lab
+        state: restarted
+
+
+# ── Jinja2 template for the service file ──────────────────────────────────────
+# Save this as ansible/templates/service.j2
+# (inline here for reference — the playbook creates it via template: src: service.j2)

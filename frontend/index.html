@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Android Device Lab</title>
+  <style>
+    :root {
+      --bg:           #0f0f1a;
+      --surface:      #1a1a2e;
+      --card:         #12122a;
+      --border:       #2a2a4a;
+      --border-light: #3a3a5a;
+      --text:         #e2e8f0;
+      --text-muted:   #7a8494;
+      --accent:       #4f8ef7;
+      --green:        #22c55e;
+      --yellow:       #f59e0b;
+      --red:          #ef4444;
+      --mono:         'Courier New', 'Consolas', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    [hidden] { display: none !important; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    /* ── Buttons ──────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 7px 13px;
+      border-radius: 5px;
+      border: 1px solid transparent;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+      white-space: nowrap;
+      line-height: 1;
+    }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+    .btn-sm { padding: 5px 10px; font-size: 12px; }
+    .btn-full { width: 100%; justify-content: center; padding: 10px; margin-top: 4px; }
+
+    .btn-primary  { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn-primary:hover  { background: #3a7ef0; border-color: #3a7ef0; }
+
+    .btn-success  { background: rgba(34,197,94,0.12); color: var(--green); border-color: rgba(34,197,94,0.25); }
+    .btn-success:hover  { background: rgba(34,197,94,0.22); }
+
+    .btn-danger   { background: rgba(239,68,68,0.12); color: var(--red); border-color: rgba(239,68,68,0.25); }
+    .btn-danger:hover   { background: rgba(239,68,68,0.22); }
+
+    .btn-ghost    { background: transparent; color: var(--text-muted); border-color: var(--border); }
+    .btn-ghost:hover    { background: var(--border); color: var(--text); }
+
+    .btn-link     { background: transparent; color: var(--accent); border-color: transparent; }
+    .btn-link:hover     { color: #3a7ef0; text-decoration: underline; }
+
+    /* ── Login ────────────────────────────────── */
+    #login-view {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .login-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 42px 40px;
+      width: 360px;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+    }
+    .login-logo {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 4px;
+      letter-spacing: -0.5px;
+    }
+    .login-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+    }
+    .field { margin-bottom: 18px; }
+    .field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 7px;
+    }
+    .field input {
+      width: 100%;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 13px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .field input::placeholder { color: var(--text-muted); opacity: 0.6; }
+    .field input:focus { border-color: var(--accent); }
+    .login-error {
+      display: none;
+      color: var(--red);
+      font-size: 12px;
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.2);
+      border-radius: 5px;
+      padding: 8px 11px;
+      margin-top: 14px;
+    }
+
+    /* ── Header ───────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      height: 54px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      padding: 0 22px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .hdr-title {
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--accent);
+      letter-spacing: -0.3px;
+      white-space: nowrap;
+    }
+    .hdr-sep {
+      width: 1px;
+      height: 18px;
+      background: var(--border);
+      margin: 0 16px;
+      flex-shrink: 0;
+    }
+    .hdr-stat {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      margin-right: 18px;
+    }
+    .hdr-stat b {
+      color: var(--text);
+      font-family: var(--mono);
+      font-weight: 500;
+    }
+    .hdr-spacer { flex: 1; }
+    .hdr-ws {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-right: 16px;
+    }
+    .ws-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--red);
+      transition: background 0.3s;
+      flex-shrink: 0;
+    }
+    .ws-dot.live { background: var(--green); }
+    .hdr-user {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-right: 12px;
+      white-space: nowrap;
+    }
+    .hdr-user b { color: var(--text); }
+
+    /* ── Main ─────────────────────────────────── */
+    main {
+      padding: 24px;
+      max-width: 1400px;
+    }
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .section-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 18px;
+    }
+
+    /* ── Table ────────────────────────────────── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    thead th {
+      background: var(--card);
+      padding: 9px 14px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.3s;
+    }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: rgba(79,142,247,0.04); }
+    tbody tr.flash {
+      animation: rowflash 0.7s ease-out forwards;
+    }
+    @keyframes rowflash {
+      0%   { background: rgba(79,142,247,0.18); }
+      100% { background: transparent; }
+    }
+    td {
+      padding: 11px 14px;
+      vertical-align: middle;
+    }
+
+    /* ── Status dot ───────────────────────────── */
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .dot-online   { background: var(--green);  box-shadow: 0 0 5px rgba(34,197,94,0.6); }
+    .dot-reserved { background: var(--yellow); box-shadow: 0 0 5px rgba(245,158,11,0.6); }
+    .dot-offline  { background: var(--border-light); }
+
+    /* ── Device cell ──────────────────────────── */
+    .dev-model { font-weight: 600; font-size: 13px; }
+    .dev-name  { font-size: 11px; color: var(--text-muted); margin-top: 1px; font-family: var(--mono); }
+    .serial    { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+
+    /* ── Battery ──────────────────────────────── */
+    .bat-wrap  { display: flex; align-items: center; gap: 7px; }
+    .bat-track { width: 34px; height: 7px; background: var(--border); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+    .bat-fill  { height: 100%; border-radius: 3px; transition: width 0.4s; }
+    .bat-pct   { font-size: 12px; color: var(--text-muted); min-width: 26px; }
+
+    /* ── Reserved cell ────────────────────────── */
+    .res-name  { font-weight: 500; font-size: 13px; color: var(--yellow); }
+    .res-me    { color: var(--accent); }
+    .res-time  { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+    .badge-free {
+      display: inline-block;
+      font-size: 11px;
+      color: var(--green);
+      background: rgba(34,197,94,0.1);
+      border: 1px solid rgba(34,197,94,0.2);
+      border-radius: 4px;
+      padding: 2px 7px;
+    }
+
+    /* ── Actions cell ─────────────────────────── */
+    .actions { display: flex; gap: 5px; flex-wrap: wrap; }
+
+    /* ── Empty / loading ──────────────────────── */
+    .empty-cell {
+      text-align: center;
+      padding: 52px 20px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Modal ────────────────────────────────── */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 500;
+      padding: 20px;
+    }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px;
+      width: 500px;
+      max-width: 100%;
+      box-shadow: 0 28px 70px rgba(0,0,0,0.65);
+    }
+    .modal h2 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .modal-desc {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+      line-height: 1.5;
+    }
+    .code-block {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 13px 15px;
+      font-family: var(--mono);
+      font-size: 13px;
+      color: #a8e6a8;
+      word-break: break-all;
+      margin-bottom: 18px;
+      user-select: all;
+      cursor: text;
+      line-height: 1.6;
+    }
+    .modal-footer { display: flex; gap: 8px; justify-content: flex-end; }
+
+    /* ── Toast ────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 22px;
+      right: 22px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 7px;
+      padding: 11px 16px;
+      font-size: 13px;
+      max-width: 280px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+      z-index: 1000;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.25s, transform 0.25s;
+      pointer-events: none;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.ok  { border-left-color: var(--green); }
+    #toast.err { border-left-color: var(--red); }
+
+    /* ── Responsive ───────────────────────────── */
+    @media (max-width: 900px) {
+      .hide-md { display: none !important; }
+      header { gap: 8px; padding: 0 14px; }
+      .hdr-stat { display: none; }
+      .hdr-stat:first-of-type { display: block; }
+      main { padding: 14px; }
+    }
+    @media (max-width: 600px) {
+      .hide-sm { display: none !important; }
+      .hdr-user { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════
+     LOGIN VIEW
+═════════════════════════════════════════════════ -->
+<div id="login-view">
+  <div class="login-box">
+    <div class="login-logo">Android Device Lab</div>
+    <div class="login-sub">Sign in to manage connected devices</div>
+
+    <div class="field">
+      <label>Your Name</label>
+      <input id="inp-name" type="text" placeholder="e.g. Alice" autocomplete="username" spellcheck="false">
+    </div>
+    <div class="field">
+      <label>Lab Password</label>
+      <input id="inp-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <div id="login-error" class="login-error"></div>
+    <button id="btn-login" class="btn btn-primary btn-full" onclick="doLogin()">Sign In</button>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════
+     DASHBOARD VIEW
+═════════════════════════════════════════════════ -->
+<div id="dashboard-view" hidden>
+  <header>
+    <span class="hdr-title">Android Device Lab</span>
+    <div class="hdr-sep"></div>
+
+    <div class="hdr-stat">Server <b id="hdr-ip">—</b></div>
+    <div class="hdr-stat">ADB <b>0.0.0.0:5037</b></div>
+    <div class="hdr-stat hide-md">Devices <b id="hdr-count">—</b></div>
+
+    <div class="hdr-spacer"></div>
+
+    <div class="hdr-ws">
+      <span class="ws-dot" id="ws-dot"></span>
+      <span id="ws-label" class="hide-sm">Connecting…</span>
+    </div>
+
+    <span class="hdr-user hide-sm">Signed in as <b id="hdr-user"></b></span>
+    <button class="btn btn-ghost btn-sm" onclick="doLogout()">Sign Out</button>
+  </header>
+
+  <main>
+    <div class="section-title">Connected Devices</div>
+    <div class="section-sub" id="section-sub">Loading…</div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:38px"></th>
+            <th>Device</th>
+            <th class="hide-md">Serial</th>
+            <th class="hide-md">Android</th>
+            <th class="hide-md">Battery</th>
+            <th>Reserved By</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="devices-tbody">
+          <tr>
+            <td colspan="7" class="empty-cell">
+              <span class="spinner"></span>Waiting for devices…
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<!-- ════════════════════════════════════════════════
+     ADB CONNECT MODAL
+═════════════════════════════════════════════════ -->
+<div id="adb-modal" class="overlay" hidden>
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>ADB Connect &mdash; <span id="modal-serial" style="font-family:var(--mono);color:var(--text-muted)"></span></h2>
+    <p class="modal-desc">
+      Run this on your local machine to connect directly over the network.<br>
+      Click the command to select it, then copy.
+    </p>
+    <div class="code-block" id="modal-cmd"></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="copyAdbCmd()">Copy</button>
+      <button class="btn btn-primary" onclick="closeModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════
+     TOAST
+═════════════════════════════════════════════════ -->
+<div id="toast"></div>
+
+<!-- ════════════════════════════════════════════════
+     JAVASCRIPT
+═════════════════════════════════════════════════ -->
+<script>
+'use strict';
+
+// ── State ─────────────────────────────────────────
+let g_user       = null;   // display_name string
+let g_serverInfo = {};     // from /api/status
+let g_ws         = null;   // WebSocket
+let g_retryTimer = null;
+let g_toastTimer = null;
+
+// ── Startup ───────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  // Keyboard shortcuts
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeModal();
+  });
+  document.getElementById('inp-pass').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
+  });
+  document.getElementById('inp-name').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('inp-pass').focus();
+  });
+  // Clicking overlay closes modal
+  document.getElementById('adb-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+
+  const saved = localStorage.getItem('adb_lab_user');
+  if (saved) {
+    // Verify session still valid
+    try {
+      const r = await fetch('/api/devices');
+      if (r.status === 401) {
+        localStorage.removeItem('adb_lab_user');
+        showLoginView(saved); // pre-fill name
+      } else {
+        g_user = saved;
+        showDashboard();
+      }
+    } catch {
+      // Server unreachable — show login
+      showLoginView(saved);
+    }
+  } else {
+    showLoginView('');
+  }
+});
+
+// ── Login / Logout ────────────────────────────────
+async function doLogin() {
+  const nameEl  = document.getElementById('inp-name');
+  const passEl  = document.getElementById('inp-pass');
+  const errEl   = document.getElementById('login-error');
+  const btnEl   = document.getElementById('btn-login');
+  const name    = nameEl.value.trim();
+  const pass    = passEl.value;
+
+  errEl.style.display = 'none';
+  if (!name) return setLoginErr('Enter your name.');
+  if (!pass) return setLoginErr('Enter the password.');
+
+  btnEl.disabled   = true;
+  btnEl.textContent = 'Signing in…';
+
+  try {
+    const r = await fetch('/api/login', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ password: pass, display_name: name }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      setLoginErr(data.detail || 'Login failed.');
+      btnEl.disabled   = false;
+      btnEl.textContent = 'Sign In';
+      return;
+    }
+    g_user = data.display_name;
+    localStorage.setItem('adb_lab_user', g_user);
+    showDashboard();
+  } catch {
+    setLoginErr('Cannot reach server — is it running?');
+    btnEl.disabled   = false;
+    btnEl.textContent = 'Sign In';
+  }
+}
+
+function setLoginErr(msg) {
+  const el = document.getElementById('login-error');
+  el.textContent   = msg;
+  el.style.display = 'block';
+}
+
+async function doLogout() {
+  try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+  g_user = null;
+  localStorage.removeItem('adb_lab_user');
+  disconnectWs();
+  showLoginView('');
+}
+
+// ── View helpers ──────────────────────────────────
+function showLoginView(prefillName) {
+  document.getElementById('login-view').hidden     = false;
+  document.getElementById('dashboard-view').hidden = true;
+
+  const errEl  = document.getElementById('login-error');
+  const btnEl  = document.getElementById('btn-login');
+  errEl.style.display  = 'none';
+  btnEl.disabled       = false;
+  btnEl.textContent    = 'Sign In';
+
+  document.getElementById('inp-name').value = prefillName || '';
+  document.getElementById('inp-pass').value = '';
+  document.getElementById('inp-name').focus();
+}
+
+async function showDashboard() {
+  document.getElementById('login-view').hidden     = true;
+  document.getElementById('dashboard-view').hidden = false;
+  document.getElementById('hdr-user').textContent  = g_user;
+
+  // Fetch server info once
+  try {
+    const r = await fetch('/api/status');
+    if (r.ok) {
+      g_serverInfo = await r.json();
+      document.getElementById('hdr-ip').textContent    = g_serverInfo.server_ip || location.hostname;
+      document.getElementById('hdr-count').textContent = g_serverInfo.device_count ?? '—';
+    }
+  } catch {}
+
+  connectWs();
+}
+
+// ── WebSocket ─────────────────────────────────────
+function connectWs() {
+  disconnectWs();
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  g_ws = new WebSocket(`${proto}//${location.host}/ws/devices`);
+
+  g_ws.onopen = () => {
+    setWsState(true);
+  };
+
+  g_ws.onmessage = e => {
+    try {
+      const payload = JSON.parse(e.data);
+      if (Array.isArray(payload.devices)) {
+        renderTable(payload.devices);
+        const online = payload.devices.filter(d => d.online).length;
+        document.getElementById('hdr-count').textContent = online;
+      }
+    } catch {}
+  };
+
+  g_ws.onclose = e => {
+    setWsState(false);
+    if (e.code === 1008) {
+      // Session invalidated
+      doLogout();
+      return;
+    }
+    g_retryTimer = setTimeout(connectWs, 4000);
+  };
+
+  g_ws.onerror = () => g_ws.close();
+}
+
+function disconnectWs() {
+  if (g_retryTimer) { clearTimeout(g_retryTimer); g_retryTimer = null; }
+  if (g_ws) {
+    g_ws.onclose = null;
+    g_ws.close();
+    g_ws = null;
+  }
+  setWsState(false);
+}
+
+function setWsState(live) {
+  const dot   = document.getElementById('ws-dot');
+  const label = document.getElementById('ws-label');
+  if (live) {
+    dot.classList.add('live');
+    label.textContent = 'Live';
+  } else {
+    dot.classList.remove('live');
+    label.textContent = 'Reconnecting…';
+  }
+}
+
+// ── Table rendering ───────────────────────────────
+// Track previous device statuses to detect changes
+const prevStatus = {};
+
+function renderTable(devices) {
+  document.getElementById('section-sub').textContent =
+    `${devices.length} device${devices.length !== 1 ? 's' : ''} — live updates every 3 s`;
+
+  const tbody = document.getElementById('devices-tbody');
+
+  if (!devices.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-cell">No devices detected</td></tr>';
+    return;
+  }
+
+  // Index existing rows
+  const existing = {};
+  tbody.querySelectorAll('tr[data-serial]').forEach(tr => {
+    existing[tr.dataset.serial] = tr;
+  });
+
+  const frag = document.createDocumentFragment();
+
+  devices.forEach(dev => {
+    const serial = dev.serial;
+    const status = !dev.online ? 'offline'
+                 : dev.reservation ? 'reserved'
+                 : 'online';
+
+    const tr = buildRow(dev, status);
+
+    // Flash row if status changed since last render
+    const prev = prevStatus[serial];
+    if (prev && prev !== status) {
+      tr.classList.add('flash');
+      tr.addEventListener('animationend', () => tr.classList.remove('flash'), { once: true });
+    }
+    prevStatus[serial] = status;
+
+    frag.appendChild(tr);
+  });
+
+  tbody.innerHTML = '';
+  tbody.appendChild(frag);
+}
+
+function buildRow(dev, status) {
+  const tr       = document.createElement('tr');
+  tr.dataset.serial = dev.serial;
+
+  const isMe     = dev.reservation && dev.reservation.reserved_by === g_user;
+  const bat      = dev.battery_level;
+  const batColor = bat === null ? '#64748b'
+                 : bat > 60    ? '#22c55e'
+                 : bat > 20    ? '#f59e0b'
+                 :               '#ef4444';
+
+  // Status cell
+  const tdStatus = cell('');
+  tdStatus.style.width = '38px';
+  tdStatus.innerHTML = `<span class="status-dot dot-${status}" title="${status}"></span>`;
+
+  // Device cell
+  const mfr   = dev.manufacturer || '';
+  const model = dev.model || '';
+  const dname = dev.device_name || dev.serial;
+  const tdDev = cell(`
+    <div class="dev-model">${esc(mfr)} ${esc(model)}</div>
+    <div class="dev-name">${esc(dname)}</div>
+  `);
+
+  // Serial
+  const tdSerial = cell(`<span class="serial">${esc(dev.serial)}</span>`);
+  tdSerial.classList.add('hide-md');
+
+  // Android
+  const tdAndroid = cell(`Android ${esc(dev.android_version || '?')}`);
+  tdAndroid.classList.add('hide-md');
+
+  // Battery
+  let batHtml;
+  if (bat !== null) {
+    batHtml = `
+      <div class="bat-wrap">
+        <div class="bat-track">
+          <div class="bat-fill" style="width:${bat}%;background:${batColor}"></div>
+        </div>
+        <span class="bat-pct">${bat}%</span>
+      </div>`;
+  } else {
+    batHtml = '<span class="bat-pct">—</span>';
+  }
+  const tdBat = cell(batHtml);
+  tdBat.classList.add('hide-md');
+
+  // Reserved-by cell
+  let resHtml;
+  if (dev.reservation) {
+    const nameClass = isMe ? 'res-name res-me' : 'res-name';
+    const who       = esc(dev.reservation.reserved_by) + (isMe ? ' (you)' : '');
+    const when      = relTime(dev.reservation.reserved_at);
+    resHtml = `
+      <div class="${nameClass}">${who}</div>
+      <div class="res-time">${when}</div>`;
+  } else {
+    resHtml = '<span class="badge-free">Available</span>';
+  }
+  const tdRes = cell(resHtml);
+
+  // Actions cell
+  const tdAct = cell('');
+  tdAct.innerHTML = buildActions(dev, status, isMe);
+
+  // Attach event handlers via data attributes
+  tdAct.querySelectorAll('[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.action;
+      const s      = btn.dataset.serial;
+      if (action === 'reserve') reserveDevice(s);
+      else if (action === 'release') releaseDevice(s);
+      else if (action === 'adb') showAdbModal(s);
+    });
+  });
+
+  tr.append(tdStatus, tdDev, tdSerial, tdAndroid, tdBat, tdRes, tdAct);
+  return tr;
+}
+
+function buildActions(dev, status, isMe) {
+  const s = dev.serial;
+
+  // Reserve / Release button
+  let resBtn = '';
+  if (status === 'offline') {
+    resBtn = '';
+  } else if (!dev.reservation) {
+    resBtn = `<button class="btn btn-success btn-sm" data-action="reserve" data-serial="${esc(s)}">Reserve</button>`;
+  } else if (isMe) {
+    resBtn = `<button class="btn btn-danger btn-sm" data-action="release" data-serial="${esc(s)}">Release</button>`;
+  } else {
+    resBtn = `<button class="btn btn-ghost btn-sm" disabled>Taken</button>`;
+  }
+
+  return `
+    <div class="actions">
+      <a class="btn btn-ghost btn-sm" href="/terminal.html?serial=${encodeURIComponent(s)}" target="_blank" rel="noopener">Terminal</a>
+      <a class="btn btn-ghost btn-sm" href="/mirror.html?serial=${encodeURIComponent(s)}">Mirror</a>
+      ${resBtn}
+      <button class="btn btn-link btn-sm" data-action="adb" data-serial="${esc(s)}">ADB</button>
+    </div>`;
+}
+
+function cell(html) {
+  const td = document.createElement('td');
+  td.innerHTML = html;
+  return td;
+}
+
+// ── Reserve / Release ─────────────────────────────
+async function reserveDevice(serial) {
+  try {
+    const r    = await fetch(`/api/devices/${encodeURIComponent(serial)}/reserve`, { method: 'POST' });
+    const data = await r.json();
+    if (r.ok) toast('Reserved ✓', 'ok');
+    else      toast(data.detail || 'Could not reserve', 'err');
+  } catch {
+    toast('Network error', 'err');
+  }
+}
+
+async function releaseDevice(serial) {
+  try {
+    const r    = await fetch(`/api/devices/${encodeURIComponent(serial)}/release`, { method: 'POST' });
+    const data = await r.json();
+    if (r.ok) toast('Released ✓', 'ok');
+    else      toast(data.detail || 'Could not release', 'err');
+  } catch {
+    toast('Network error', 'err');
+  }
+}
+
+// ── ADB Modal ─────────────────────────────────────
+function showAdbModal(serial) {
+  const ip  = g_serverInfo.server_ip || location.hostname;
+  const cmd = `adb -H ${ip} -P 5037 -s ${serial} shell`;
+  document.getElementById('modal-serial').textContent = serial;
+  document.getElementById('modal-cmd').textContent    = cmd;
+  document.getElementById('adb-modal').hidden = false;
+}
+
+function closeModal() {
+  document.getElementById('adb-modal').hidden = true;
+}
+
+async function copyAdbCmd() {
+  const cmd = document.getElementById('modal-cmd').textContent;
+  try {
+    await navigator.clipboard.writeText(cmd);
+    toast('Copied to clipboard', 'ok');
+  } catch {
+    // Fallback: select the text
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById('modal-cmd'));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    toast('Text selected — press Ctrl+C / ⌘C to copy', 'ok');
+  }
+}
+
+// ── Toast ─────────────────────────────────────────
+function toast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className   = `show ${type || 'ok'}`;
+  if (g_toastTimer) clearTimeout(g_toastTimer);
+  g_toastTimer = setTimeout(() => { el.className = ''; }, 2800);
+}
+
+// ── Helpers ───────────────────────────────────────
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#39;');
+}
+
+function relTime(iso) {
+  if (!iso) return '';
+  // Treat as UTC if no timezone suffix
+  const ts   = new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime();
+  const diff = Date.now() - ts;
+  const s    = Math.floor(diff / 1000);
+  const m    = Math.floor(s / 60);
+  const h    = Math.floor(m / 60);
+  const d    = Math.floor(h / 24);
+  if (d > 0)  return `${d}d ago`;
+  if (h > 0)  return `${h}h ago`;
+  if (m > 0)  return `${m}m ago`;
+  if (s > 5)  return `${s}s ago`;
+  return 'just now';
+}
+</script>
+</body>
+</html>

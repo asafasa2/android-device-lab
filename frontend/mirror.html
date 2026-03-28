@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Screen Mirror — Android Device Lab</title>
+  <style>
+    :root {
+      --bg:           #0f0f1a;
+      --surface:      #1a1a2e;
+      --card:         #12122a;
+      --border:       #2a2a4a;
+      --border-light: #3a3a5a;
+      --text:         #e2e8f0;
+      --text-muted:   #7a8494;
+      --accent:       #4f8ef7;
+      --green:        #22c55e;
+      --yellow:       #f59e0b;
+      --red:          #ef4444;
+      --mono:         'Courier New', 'Consolas', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ──────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      height: 50px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+      flex-shrink: 0;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 12px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      color: var(--text-muted);
+      background: transparent;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--border); color: var(--text); }
+
+    .hdr-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--text);
+    }
+    .hdr-serial {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .hdr-spacer { flex: 1; }
+
+    /* ── Status indicators ───────────────────────── */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .ws-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--red);
+      transition: background 0.3s;
+      flex-shrink: 0;
+    }
+    .ws-dot.live { background: var(--green); }
+    .fps-badge {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 7px;
+    }
+
+    /* ── Canvas area ─────────────────────────────── */
+    #canvas-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      padding: 12px;
+    }
+
+    #mirror-canvas {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: crosshair;
+      max-width: 100%;
+      max-height: 100%;
+      image-rendering: auto;
+      display: block;
+    }
+
+    /* ── Overlay messages ────────────────────────── */
+    #status-msg {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px 28px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+    #status-msg.hidden { display: none; }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Toast ───────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 7px;
+      padding: 10px 15px;
+      font-size: 12px;
+      max-width: 260px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+      z-index: 1000;
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.err  { border-left-color: var(--red); }
+  </style>
+</head>
+<body>
+
+<header>
+  <a class="btn" href="/" title="Back to device list">&#8592; Devices</a>
+  <div class="hdr-title">Screen Mirror</div>
+  <span class="hdr-serial" id="hdr-serial">—</span>
+  <div class="hdr-spacer"></div>
+  <div class="status-row">
+    <span class="fps-badge" id="fps-badge">— fps</span>
+    <span class="ws-dot" id="ws-dot"></span>
+    <span id="ws-label">Connecting…</span>
+  </div>
+</header>
+
+<div id="canvas-wrap">
+  <canvas id="mirror-canvas"></canvas>
+  <div id="status-msg"><span class="spinner"></span>Connecting…</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+// ── Params ────────────────────────────────────────
+const params = new URLSearchParams(location.search);
+const serial = params.get('serial') || '';
+if (serial) document.getElementById('hdr-serial').textContent = serial;
+
+// ── State ─────────────────────────────────────────
+let ws          = null;
+let retryTimer  = null;
+let toastTimer  = null;
+
+let deviceW     = 1080;
+let deviceH     = 1920;
+
+// FPS tracking
+let frameCount  = 0;
+let fpsInterval = null;
+
+// Drag tracking (for swipe)
+let dragStart   = null;   // {x, y, time} in normalized coords
+const DRAG_THRESHOLD_PX = 8;
+
+// ── Canvas ────────────────────────────────────────
+const canvas    = document.getElementById('mirror-canvas');
+const ctx       = canvas.getContext('2d');
+const statusMsg = document.getElementById('status-msg');
+
+function setStatus(html) {
+  statusMsg.innerHTML = html;
+  statusMsg.classList.remove('hidden');
+}
+function clearStatus() {
+  statusMsg.classList.add('hidden');
+}
+
+// ── WebSocket ─────────────────────────────────────
+function connect() {
+  disconnect();
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws/mirror/${encodeURIComponent(serial)}`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setWsState(true);
+    setStatus('<span class="spinner"></span>Waiting for first frame…');
+  };
+
+  ws.onmessage = async (e) => {
+    if (typeof e.data === 'string') {
+      handleTextMsg(JSON.parse(e.data));
+    } else {
+      await handleFrame(e.data);
+    }
+  };
+
+  ws.onclose = (e) => {
+    setWsState(false);
+    if (e.code === 1008) {
+      setStatus('Not authenticated. <a href="/" style="color:var(--accent)">Sign in</a>');
+      return;
+    }
+    if (e.code === 4003) {
+      setStatus('Device not reserved by you.');
+      return;
+    }
+    if (e.code === 4004) {
+      setStatus('Device offline or not found.');
+      return;
+    }
+    setStatus('<span class="spinner"></span>Reconnecting…');
+    retryTimer = setTimeout(connect, 4000);
+  };
+
+  ws.onerror = () => ws.close();
+}
+
+function disconnect() {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  setWsState(false);
+}
+
+function setWsState(live) {
+  const dot   = document.getElementById('ws-dot');
+  const label = document.getElementById('ws-label');
+  if (live) {
+    dot.classList.add('live');
+    label.textContent = 'Connected';
+  } else {
+    dot.classList.remove('live');
+    label.textContent = 'Disconnected';
+  }
+}
+
+// ── Message handlers ──────────────────────────────
+function handleTextMsg(msg) {
+  if (msg.type === 'info') {
+    deviceW = msg.width  || 1080;
+    deviceH = msg.height || 1920;
+    // Size the canvas to match device aspect ratio, capped to container
+    sizeCanvas();
+    if (msg.serial) document.getElementById('hdr-serial').textContent = msg.serial;
+  } else if (msg.type === 'error') {
+    toast(msg.message || 'screencap error', 'err');
+  }
+}
+
+async function handleFrame(buf) {
+  const blob = new Blob([buf], { type: 'image/png' });
+  const bmp  = await createImageBitmap(blob);
+  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  bmp.close();
+  frameCount++;
+  clearStatus();
+}
+
+// ── Canvas sizing ─────────────────────────────────
+function sizeCanvas() {
+  const wrap = document.getElementById('canvas-wrap');
+  const maxW = wrap.clientWidth  - 24;
+  const maxH = wrap.clientHeight - 24;
+  const ratio = deviceW / deviceH;
+  let w = maxW;
+  let h = w / ratio;
+  if (h > maxH) { h = maxH; w = h * ratio; }
+  canvas.width  = Math.round(w);
+  canvas.height = Math.round(h);
+}
+
+window.addEventListener('resize', sizeCanvas);
+
+// ── Input events ──────────────────────────────────
+function canvasNorm(e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) / rect.width,
+    y: (e.clientY - rect.top)  / rect.height,
+  };
+}
+
+canvas.addEventListener('mousedown', e => {
+  const pos = canvasNorm(e);
+  dragStart = { ...pos, time: Date.now(), clientX: e.clientX, clientY: e.clientY };
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (!dragStart) return;
+  const pos = canvasNorm(e);
+  const dx  = e.clientX - dragStart.clientX;
+  const dy  = e.clientY - dragStart.clientY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  if (dist < DRAG_THRESHOLD_PX) {
+    // Tap
+    send({ type: 'tap', x: pos.x, y: pos.y });
+  } else {
+    // Swipe
+    const duration = Math.max(100, Date.now() - dragStart.time);
+    send({ type: 'swipe', x1: dragStart.x, y1: dragStart.y, x2: pos.x, y2: pos.y, duration });
+  }
+  dragStart = null;
+});
+
+canvas.addEventListener('mouseleave', () => { dragStart = null; });
+
+// Touch support
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t   = e.touches[0];
+  const pos = canvasNorm(t);
+  dragStart = { ...pos, time: Date.now(), clientX: t.clientX, clientY: t.clientY };
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (!dragStart) return;
+  const t   = e.changedTouches[0];
+  const pos = canvasNorm(t);
+  const dx  = t.clientX - dragStart.clientX;
+  const dy  = t.clientY - dragStart.clientY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  if (dist < DRAG_THRESHOLD_PX) {
+    send({ type: 'tap', x: pos.x, y: pos.y });
+  } else {
+    const duration = Math.max(100, Date.now() - dragStart.time);
+    send({ type: 'swipe', x1: dragStart.x, y1: dragStart.y, x2: pos.x, y2: pos.y, duration });
+  }
+  dragStart = null;
+}, { passive: false });
+
+function send(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
+  }
+}
+
+// ── FPS counter ───────────────────────────────────
+fpsInterval = setInterval(() => {
+  document.getElementById('fps-badge').textContent = frameCount + ' fps';
+  frameCount = 0;
+}, 1000);
+
+// ── Toast ─────────────────────────────────────────
+function toast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className   = `show ${type || ''}`;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ''; }, 3000);
+}
+
+// ── Boot ──────────────────────────────────────────
+if (!serial) {
+  setStatus('No device serial specified.');
+} else {
+  sizeCanvas();
+  connect();
+}
+</script>
+</body>
+</html>

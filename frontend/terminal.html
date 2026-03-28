@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terminal — Android Device Lab</title>
+
+  <!-- xterm.js 5.3.0 from CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+
+  <style>
+    :root {
+      --bg:           #0f0f1a;
+      --surface:      #1a1a2e;
+      --card:         #12122a;
+      --border:       #2a2a4a;
+      --border-light: #3a3a5a;
+      --text:         #e2e8f0;
+      --text-muted:   #7a8494;
+      --accent:       #4f8ef7;
+      --green:        #22c55e;
+      --yellow:       #f59e0b;
+      --red:          #ef4444;
+      --mono:         'Courier New', 'Consolas', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    [hidden] { display: none !important; }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+    }
+
+    /* ── Layout ──────────────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* ── Header ──────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      height: 50px;
+      padding: 0 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 12px;
+      border-radius: 5px;
+      border: 1px solid transparent;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s, border-color 0.15s;
+      white-space: nowrap;
+      line-height: 1;
+      background: transparent;
+      color: var(--text-muted);
+      border-color: var(--border);
+    }
+    .btn:hover { background: var(--border); color: var(--text); }
+    .btn-accent { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn-accent:hover { background: #3a7ef0; border-color: #3a7ef0; }
+
+    .hdr-sep {
+      width: 1px;
+      height: 18px;
+      background: var(--border);
+      margin: 0 14px;
+      flex-shrink: 0;
+    }
+    .hdr-device {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .hdr-model {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1;
+    }
+    .hdr-serial {
+      font-size: 11px;
+      font-family: var(--mono);
+      color: var(--text-muted);
+      line-height: 1;
+    }
+    .hdr-spacer { flex: 1; }
+
+    /* ── Status indicator ────────────────────── */
+    .conn-status {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-right: 12px;
+    }
+    .conn-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: background 0.3s;
+      flex-shrink: 0;
+    }
+    .conn-dot.connecting { background: var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
+    .conn-dot.connected  { background: var(--green); }
+    .conn-dot.error      { background: var(--red); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+
+    /* ── Terminal area ───────────────────────── */
+    #terminal-wrap {
+      flex: 1;
+      overflow: hidden;
+      background: var(--bg);
+      padding: 6px 6px 6px 6px;
+      /* xterm.js needs a defined size container */
+      position: relative;
+    }
+    #terminal-container {
+      width: 100%;
+      height: 100%;
+    }
+    /* Override xterm.js defaults to sit flush */
+    .xterm { height: 100%; }
+    .xterm-viewport { background: var(--bg) !important; }
+
+    /* ── Overlay (error / disconnected) ─────── */
+    #overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 15, 26, 0.88);
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+      flex-direction: column;
+      gap: 14px;
+      text-align: center;
+      padding: 24px;
+    }
+    #overlay.show { display: flex; }
+    .overlay-icon {
+      font-size: 36px;
+      line-height: 1;
+    }
+    .overlay-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .overlay-msg {
+      font-size: 13px;
+      color: var(--text-muted);
+      max-width: 380px;
+      line-height: 1.5;
+    }
+    .overlay-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    /* ── CDN unavailable notice ──────────────── */
+    #cdn-error {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 14px;
+      padding: 32px;
+      text-align: center;
+      z-index: 999;
+    }
+    #cdn-error.show { display: flex; }
+    #cdn-error h2 { font-size: 18px; color: var(--text); }
+    #cdn-error p  { font-size: 13px; color: var(--text-muted); max-width: 420px; line-height: 1.6; }
+    #cdn-error code {
+      display: block;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: #a8e6a8;
+      text-align: left;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- CDN unavailable fallback (shown by JS if xterm fails to load) -->
+<div id="cdn-error">
+  <h2>xterm.js unavailable</h2>
+  <p>
+    The terminal requires <strong>xterm.js</strong> from CDN, but it could not be loaded.
+    To enable offline use, download it once while connected:
+  </p>
+  <code>
+# Run from ~/android-device-lab/frontend/<br>
+mkdir -p lib<br>
+curl -o lib/xterm.css  https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css<br>
+curl -o lib/xterm.js   https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js<br>
+curl -o lib/xterm-addon-fit.js \<br>
+  https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js
+  </code>
+  <a href="/" class="btn">← Back to device list</a>
+</div>
+
+<div id="app">
+  <!-- ── Header ────────────────────────────────────── -->
+  <header>
+    <a href="/" class="btn" id="btn-back">← Back</a>
+    <div class="hdr-sep"></div>
+    <div class="hdr-device">
+      <span class="hdr-model" id="hdr-model">Loading…</span>
+      <span class="hdr-serial" id="hdr-serial"></span>
+    </div>
+
+    <div class="hdr-spacer"></div>
+
+    <div class="conn-status">
+      <span class="conn-dot connecting" id="conn-dot"></span>
+      <span id="conn-label">Connecting…</span>
+    </div>
+    <button class="btn btn-accent" id="btn-reconnect" style="display:none" onclick="connect()">
+      Reconnect
+    </button>
+  </header>
+
+  <!-- ── Terminal ──────────────────────────────────── -->
+  <div id="terminal-wrap">
+    <div id="terminal-container"></div>
+
+    <!-- Overlay for errors / session end -->
+    <div id="overlay">
+      <div class="overlay-icon" id="ov-icon">⚠</div>
+      <div class="overlay-title" id="ov-title">Disconnected</div>
+      <div class="overlay-msg"   id="ov-msg"></div>
+      <div class="overlay-actions">
+        <a href="/" class="btn">← Back</a>
+        <button class="btn btn-accent" id="ov-reconnect" onclick="connect()">Reconnect</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── Read serial from URL ─────────────────────────────────────────────────────
+const params = new URLSearchParams(location.search);
+const serial = params.get('serial') || '';
+
+if (!serial) {
+  showOverlay('⚠', 'No device specified', 'Add ?serial=XXXX to the URL.', false);
+}
+
+document.getElementById('hdr-serial').textContent = serial;
+document.title = `Terminal — ${serial}`;
+
+// ── Check xterm.js loaded ────────────────────────────────────────────────────
+if (typeof Terminal === 'undefined' || typeof FitAddon === 'undefined') {
+  document.getElementById('cdn-error').classList.add('show');
+  document.getElementById('app').style.display = 'none';
+  throw new Error('xterm.js CDN scripts not loaded');
+}
+
+// ── Initialize xterm ─────────────────────────────────────────────────────────
+const term = new Terminal({
+  cursorBlink: true,
+  scrollback: 5000,
+  fontFamily: "'Courier New', 'Consolas', 'Lucida Console', monospace",
+  fontSize: 14,
+  lineHeight: 1.2,
+  theme: {
+    background:    '#0f0f1a',
+    foreground:    '#e2e8f0',
+    cursor:        '#4f8ef7',
+    cursorAccent:  '#0f0f1a',
+    selectionBackground: 'rgba(79,142,247,0.3)',
+    black:         '#1a1a2e',
+    red:           '#ef4444',
+    green:         '#22c55e',
+    yellow:        '#f59e0b',
+    blue:          '#4f8ef7',
+    magenta:       '#a855f7',
+    cyan:          '#06b6d4',
+    white:         '#cbd5e1',
+    brightBlack:   '#374151',
+    brightRed:     '#f87171',
+    brightGreen:   '#4ade80',
+    brightYellow:  '#fbbf24',
+    brightBlue:    '#60a5fa',
+    brightMagenta: '#c084fc',
+    brightCyan:    '#22d3ee',
+    brightWhite:   '#f8fafc',
+  },
+});
+
+const fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
+term.open(document.getElementById('terminal-container'));
+fitAddon.fit();
+
+// Resize terminal when window resizes
+const resizeObserver = new ResizeObserver(() => {
+  try { fitAddon.fit(); } catch {}
+});
+resizeObserver.observe(document.getElementById('terminal-wrap'));
+
+// ── WebSocket state ───────────────────────────────────────────────────────────
+let ws = null;
+let encoder = new TextEncoder();
+
+// Send resize to backend whenever xterm resizes
+term.onResize(({ cols, rows }) => {
+  sendResize(cols, rows);
+});
+
+// Send keystrokes / paste as binary frames
+term.onData(data => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(encoder.encode(data));
+  }
+});
+
+// ── Load device info ─────────────────────────────────────────────────────────
+async function loadDeviceInfo() {
+  try {
+    const r = await fetch('/api/devices');
+    if (r.status === 401) { location.href = '/'; return; }
+    if (!r.ok) return;
+    const { devices } = await r.json();
+    const dev = devices.find(d => d.serial === serial);
+    if (dev) {
+      const model = [dev.manufacturer, dev.model].filter(Boolean).join(' ');
+      document.getElementById('hdr-model').textContent = model || serial;
+      document.title = `Terminal — ${model || serial}`;
+    } else {
+      document.getElementById('hdr-model').textContent = serial;
+    }
+  } catch {}
+}
+
+// ── Connect WebSocket ─────────────────────────────────────────────────────────
+function connect() {
+  if (!serial) return;
+
+  // Hide overlay / reconnect button
+  hideOverlay();
+  document.getElementById('btn-reconnect').style.display = 'none';
+  setConnState('connecting', 'Connecting…');
+
+  // Write a connecting message into the terminal
+  term.writeln('\r\x1b[90m── Connecting to ' + serial + ' ──\x1b[0m');
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${serial}`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setConnState('connected', 'Connected');
+    // Send initial terminal size
+    sendResize(term.cols, term.rows);
+    term.focus();
+  };
+
+  ws.onmessage = e => {
+    if (e.data instanceof ArrayBuffer) {
+      term.write(new Uint8Array(e.data));
+    } else if (typeof e.data === 'string') {
+      // Control message from server (e.g., error)
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'error') {
+          term.writeln('\r\n\x1b[31m' + msg.message + '\x1b[0m\r\n');
+        }
+      } catch {}
+    }
+  };
+
+  ws.onclose = e => {
+    ws = null;
+    handleClose(e.code, e.reason);
+  };
+
+  ws.onerror = () => {
+    // onclose fires after onerror, so just let onclose handle it
+  };
+}
+
+function sendResize(cols, rows) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+  }
+}
+
+// ── Handle close ─────────────────────────────────────────────────────────────
+function handleClose(code, reason) {
+  switch (code) {
+    case 1000:
+      // Normal — process exited
+      setConnState('error', 'Session ended');
+      term.writeln('\r\n\x1b[90m── Session ended ──\x1b[0m');
+      showReconnect();
+      break;
+
+    case 1008:
+      // Not authenticated
+      setConnState('error', 'Not authenticated');
+      term.writeln('\r\n\x1b[31mNot authenticated — redirecting to login…\x1b[0m');
+      setTimeout(() => { location.href = '/'; }, 1500);
+      break;
+
+    case 4003:
+      // Not reserved by you
+      setConnState('error', 'Access denied');
+      showOverlay(
+        '🔒',
+        'Device not reserved by you',
+        `You must reserve "${serial}" before opening a terminal. Go back and click Reserve first.`,
+        false
+      );
+      break;
+
+    case 4004:
+      // Device offline
+      setConnState('error', 'Device offline');
+      showOverlay(
+        '📵',
+        'Device not found',
+        `"${serial}" is not connected or is offline.`,
+        false
+      );
+      break;
+
+    case 4000:
+      // Shell spawn failed
+      setConnState('error', 'Shell failed');
+      showOverlay('⚠', 'Could not start shell', reason || 'adb shell failed to start.', true);
+      break;
+
+    default:
+      if (code === 1001 || code === 1006) {
+        // Going away / abnormal closure — try reconnect
+        setConnState('error', 'Lost connection');
+        term.writeln('\r\n\x1b[33m── Connection lost ──\x1b[0m');
+        showReconnect();
+      } else {
+        setConnState('error', 'Disconnected');
+        term.writeln(`\r\n\x1b[90m── Disconnected (${code}) ──\x1b[0m`);
+        showReconnect();
+      }
+  }
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function setConnState(state, label) {
+  const dot = document.getElementById('conn-dot');
+  dot.className = 'conn-dot ' + state;
+  document.getElementById('conn-label').textContent = label;
+}
+
+function showReconnect() {
+  document.getElementById('btn-reconnect').style.display = '';
+}
+
+function showOverlay(icon, title, msg, canReconnect) {
+  document.getElementById('ov-icon').textContent    = icon;
+  document.getElementById('ov-title').textContent   = title;
+  document.getElementById('ov-msg').textContent     = msg;
+  document.getElementById('ov-reconnect').style.display = canReconnect ? '' : 'none';
+  document.getElementById('overlay').classList.add('show');
+}
+
+function hideOverlay() {
+  document.getElementById('overlay').classList.remove('show');
+}
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+loadDeviceInfo();
+if (serial) connect();
+</script>
+</body>
+</html>

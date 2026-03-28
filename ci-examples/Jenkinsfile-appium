@@ -1,0 +1,180 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Appium Pipeline — Remote ADB + Automated Device Reservation
+//
+// Flow:
+//   1. Reserve a real device via the lab API
+//   2. Configure ANDROID_ADB_SERVER_ADDRESS so Appium reaches it remotely
+//   3. Run Appium server pointing at the remote device
+//   4. Execute test suite (Maven/Gradle)
+//   5. Release device in post { always {} }
+//
+// Prerequisites on the Jenkins agent:
+//   - Java, Maven or Gradle
+//   - Node.js + npm (for Appium: npm install -g appium)
+//   - appium driver install uiautomator2
+//   - adb, curl, jq
+//   - Network access to 172.31.254.224:8000 and :5037
+//
+// Appium connects to the remote ADB server the same way a local one would —
+// by setting ANDROID_ADB_SERVER_ADDRESS before starting appium.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pipeline {
+    agent any
+
+    environment {
+        LAB_URL    = 'http://172.31.254.224:8000'
+        CI_API_KEY = credentials('adb-lab-ci-api-key')
+
+        // Remote ADB server on the device-lab host
+        ANDROID_ADB_SERVER_ADDRESS = '172.31.254.224'
+        ANDROID_ADB_SERVER_PORT    = '5037'
+
+        // Appium server will bind on the agent
+        APPIUM_PORT = '4723'
+
+        // Appium log location
+        APPIUM_LOG = 'build/appium.log'
+    }
+
+    stages {
+        stage('Reserve device') {
+            steps {
+                script {
+                    def response = sh(
+                        returnStdout: true,
+                        script: """
+                            curl -sf -X POST ${LAB_URL}/api/ci/reserve \\
+                                -H 'Content-Type: application/json' \\
+                                -H "X-API-Key: ${CI_API_KEY}" \\
+                                -d '{
+                                    "job_name": "${JOB_NAME}#${BUILD_NUMBER}",
+                                    "device_filter": {"min_api": 29}
+                                }'
+                        """
+                    ).trim()
+
+                    def json = readJSON text: response
+                    if (!json.ok) {
+                        error("Reservation failed: ${response}")
+                    }
+
+                    env.ANDROID_SERIAL   = json.serial
+                    env.ANDROID_VERSION  = json.android_version
+                    env.DEVICE_MODEL     = "${json.manufacturer} ${json.model}"
+                    echo "Reserved: ${env.ANDROID_SERIAL} — ${env.DEVICE_MODEL} (Android ${env.ANDROID_VERSION})"
+                }
+            }
+        }
+
+        stage('Verify ADB connectivity') {
+            steps {
+                // Kill any stale local adb so the env var takes effect cleanly
+                sh 'adb kill-server || true'
+                sh 'adb devices'
+                sh 'adb -s ${ANDROID_SERIAL} shell echo "ADB OK"'
+            }
+        }
+
+        stage('Install app under test') {
+            steps {
+                sh 'adb -s ${ANDROID_SERIAL} install -r -g app/build/outputs/apk/debug/app-debug.apk'
+            }
+        }
+
+        stage('Start Appium server') {
+            steps {
+                script {
+                    // Kill any leftover Appium from a previous run
+                    sh "fuser -k ${APPIUM_PORT}/tcp || true"
+
+                    // Start Appium in the background; redirect output to log file
+                    sh """
+                        ANDROID_ADB_SERVER_ADDRESS=${ANDROID_ADB_SERVER_ADDRESS} \\
+                        ANDROID_ADB_SERVER_PORT=${ANDROID_ADB_SERVER_PORT} \\
+                        appium --port ${APPIUM_PORT} \\
+                               --log ${APPIUM_LOG} \\
+                               --log-timestamp \\
+                               --allow-insecure adb_shell \\
+                            &
+                        echo \$! > build/appium.pid
+                    """
+
+                    // Wait for Appium to be ready (up to 30 s)
+                    timeout(time: 30, unit: 'SECONDS') {
+                        waitUntil {
+                            script {
+                                def status = sh(
+                                    returnStatus: true,
+                                    script: "curl -sf http://localhost:${APPIUM_PORT}/status"
+                                )
+                                return status == 0
+                            }
+                        }
+                    }
+                    echo "Appium ready on port ${APPIUM_PORT}"
+                }
+            }
+        }
+
+        stage('Run Appium tests') {
+            steps {
+                // Pass device info as system properties so tests can build capabilities
+                sh """
+                    mvn test \\
+                        -Dappium.server.url=http://localhost:${APPIUM_PORT} \\
+                        -Dandroid.device.serial=${ANDROID_SERIAL} \\
+                        -Dandroid.version=${ANDROID_VERSION} \\
+                        -Dtest.suite=smoke \\
+                        -Dsurefire.rerunFailingTestsCount=1
+                """
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/**/*.xml'
+                }
+            }
+        }
+
+        stage('Collect artifacts') {
+            steps {
+                sh 'adb -s ${ANDROID_SERIAL} pull /sdcard/Pictures/Screenshots build/screenshots/ || true'
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'build/screenshots/**,build/appium.log', allowEmptyArchive: true
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Stop Appium
+                sh '''
+                    if [ -f build/appium.pid ]; then
+                        kill $(cat build/appium.pid) 2>/dev/null || true
+                        rm -f build/appium.pid
+                    fi
+                    fuser -k ${APPIUM_PORT}/tcp || true
+                '''
+
+                // Release device
+                if (env.ANDROID_SERIAL) {
+                    try {
+                        sh """
+                            curl -sf -X POST ${LAB_URL}/api/ci/release \\
+                                -H 'Content-Type: application/json' \\
+                                -H "X-API-Key: ${CI_API_KEY}" \\
+                                -d '{"serial": "${env.ANDROID_SERIAL}", "job_name": "${JOB_NAME}#${BUILD_NUMBER}"}'
+                        """
+                        echo "Released ${env.ANDROID_SERIAL}"
+                    } catch (e) {
+                        echo "Could not release ${env.ANDROID_SERIAL}: ${e.message}"
+                    }
+                }
+            }
+        }
+    }
+}

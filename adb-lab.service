@@ -1,0 +1,69 @@
+# adb-lab.service — systemd unit for Android Device Lab
+#
+# This file is a template. install.sh substitutes the placeholders:
+#   __PROJECT_DIR__  →  absolute path to the project root
+#   __RUN_USER__     →  the user account that runs the service
+#
+# To install:  sudo bash install.sh
+# To edit:     sudo systemctl edit adb-lab   (override, survives reinstall)
+# To apply:    sudo systemctl daemon-reload && sudo systemctl restart adb-lab
+
+[Unit]
+Description=Android Device Lab — shared ADB server and web UI
+Documentation=file://__PROJECT_DIR__/README.md
+After=network.target
+# If you run USB hot-plug rules via udev, add:
+# After=network.target systemd-udevd.service
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_USER__
+
+WorkingDirectory=__PROJECT_DIR__
+
+# Use the project's own venv so system packages never interfere
+ExecStart=__PROJECT_DIR__/venv/bin/uvicorn backend.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --log-level info
+
+# Restart on any non-zero exit; don't hammer on rapid failures
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Logging — view with: journalctl -u adb-lab -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=adb-lab
+
+# ── Application configuration ─────────────────────────────────────────────────
+# Change ADB_LAB_PASSWORD and ADB_LAB_CI_API_KEY before going live.
+# After editing, run: sudo systemctl daemon-reload && sudo systemctl restart adb-lab
+
+Environment="ADB_LAB_PASSWORD=adblab123"
+Environment="ADB_LAB_PORT=8000"
+Environment="ADB_PATH=adb"
+Environment="RESERVATION_TIMEOUT_HOURS=2"
+Environment="DEVICE_POLL_INTERVAL=5"
+Environment="ADB_LAB_CI_API_KEY=ci-key-change-me"
+# Auto-detected from network interface by default; override if needed:
+# Environment="ADB_LAB_SERVER_IP=172.31.254.224"
+
+# ── USB device access ─────────────────────────────────────────────────────────
+# The user must be in the 'plugdev' group to access USB devices without root.
+# Add: sudo usermod -aG plugdev __RUN_USER__
+# Then log out and back in (or: sudo systemctl restart adb-lab).
+SupplementaryGroups=plugdev
+
+# ── Security hardening (optional, uncomment if not using Docker) ──────────────
+# ProtectSystem=strict
+# ProtectHome=read-only
+# ReadWritePaths=__PROJECT_DIR__/data
+# NoNewPrivileges=true
+# PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

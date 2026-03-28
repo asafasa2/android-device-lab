@@ -1,0 +1,83 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Approach 1: Environment Variables
+//
+// The Jenkins agent uses the ADB server on the device-lab host directly.
+// Set ANDROID_ADB_SERVER_ADDRESS so every `adb` command in the pipeline
+// talks to the remote server instead of a local one.
+//
+// Prerequisites on the Jenkins agent:
+//   - adb installed (apt install adb  /  brew install android-platform-tools)
+//   - Network access to 172.31.254.224:5037
+//
+// Pros:  Simple. No API calls. Works with any existing adb-based scripts.
+// Cons:  You must know the device serial in advance (or hard-code it).
+//        No automatic device selection or conflict detection.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pipeline {
+    agent any
+
+    environment {
+        // Point every `adb` invocation at the lab server
+        ANDROID_ADB_SERVER_ADDRESS = '172.31.254.224'
+        ANDROID_ADB_SERVER_PORT    = '5037'
+
+        // Set the target serial — or inject it as a Jenkins parameter
+        ANDROID_SERIAL = "${params.DEVICE_SERIAL ?: 'YOUR_DEVICE_SERIAL'}"
+
+        LAB_URL    = 'http://172.31.254.224:8000'
+        CI_API_KEY = credentials('adb-lab-ci-api-key')  // Jenkins secret text
+    }
+
+    parameters {
+        string(name: 'DEVICE_SERIAL', defaultValue: '', description: 'Leave blank to auto-select')
+    }
+
+    stages {
+        stage('Verify ADB connection') {
+            steps {
+                // Kill any stale local server so this agent uses the remote one
+                sh 'adb kill-server || true'
+                sh 'adb devices'
+                sh 'adb -s ${ANDROID_SERIAL} shell getprop ro.build.version.release'
+            }
+        }
+
+        stage('Install APK') {
+            steps {
+                sh 'adb -s ${ANDROID_SERIAL} install -r app/build/outputs/apk/debug/app-debug.apk'
+            }
+        }
+
+        stage('Run instrumented tests') {
+            steps {
+                sh '''
+                    adb -s ${ANDROID_SERIAL} shell am instrument -w \
+                        -e class com.example.SmokeTest \
+                        com.example.test/androidx.test.runner.AndroidJUnitRunner
+                '''
+            }
+        }
+
+        stage('Pull test results') {
+            steps {
+                sh 'adb -s ${ANDROID_SERIAL} pull /sdcard/test-results/ build/test-results/'
+            }
+            post {
+                always {
+                    junit 'build/test-results/**/*.xml'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Clean up: clear logcat, uninstall test app
+            sh '''
+                adb -s ${ANDROID_SERIAL} shell pm clear com.example.app || true
+                adb -s ${ANDROID_SERIAL} shell pm uninstall com.example.test || true
+            '''
+        }
+    }
+}

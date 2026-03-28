@@ -1,0 +1,62 @@
+# docker-compose.yml — Android Device Lab
+#
+# Start:   docker compose up -d
+# Logs:    docker compose logs -f
+# Stop:    docker compose down
+# Rebuild: docker compose build --no-cache && docker compose up -d
+
+services:
+  adb-lab:
+    build: .
+    # --- OR pull a pre-built image: ---
+    # image: ghcr.io/yourorg/android-device-lab:latest
+
+    container_name: adb-lab
+
+    # ── USB device access ─────────────────────────────────────────────────────
+    # privileged + /dev/bus/usb volume gives the container full access to all
+    # USB devices plugged into the host.  Required for `adb devices` to see
+    # phones.  Remove if you only need remote-adb (TCP devices).
+    privileged: true
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+
+    # ── Ports ─────────────────────────────────────────────────────────────────
+    ports:
+      - "8000:8000"    # Web UI + REST API
+      - "5037:5037"    # ADB server — remote: adb -H <host> -P 5037
+
+    # ── Persistent storage ────────────────────────────────────────────────────
+    volumes:
+      - ./data:/app/data          # SQLite database
+      - /dev/bus/usb:/dev/bus/usb # USB devices (duplicated from above for clarity)
+
+    # ── Configuration ─────────────────────────────────────────────────────────
+    # IMPORTANT: change ADB_LAB_PASSWORD and ADB_LAB_CI_API_KEY!
+    environment:
+      ADB_LAB_PASSWORD:        adblab123
+      ADB_LAB_PORT:            "8000"
+      ADB_PATH:                adb
+      RESERVATION_TIMEOUT_HOURS: "2"
+      DEVICE_POLL_INTERVAL:    "5"
+      ADB_LAB_CI_API_KEY:      ci-key-change-me
+      # Set to the host machine's LAN IP so the "ADB Connect" button in the
+      # web UI shows the correct address for remote adb connections:
+      # ADB_LAB_SERVER_IP: "172.31.254.224"
+
+    # ── Reliability ───────────────────────────────────────────────────────────
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    # ── Logging ───────────────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"

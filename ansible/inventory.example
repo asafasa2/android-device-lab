@@ -1,0 +1,38 @@
+# ansible/inventory.example
+#
+# Copy to inventory.ini and fill in your actual IPs / hostnames.
+# Run the playbook:
+#   ansible-playbook -i ansible/inventory.ini ansible/playbook.yml
+#   ansible-playbook -i ansible/inventory.ini ansible/playbook.yml --check  # dry-run
+
+[device_labs]
+# Primary lab server
+lab-server-01 ansible_host=172.31.254.224 ansible_user=ubuntu
+
+# Additional servers (optional)
+# lab-server-02 ansible_host=172.31.254.225 ansible_user=ubuntu
+# lab-server-03 ansible_host=192.168.1.100  ansible_user=labuser
+
+[device_labs:vars]
+ansible_python_interpreter=/usr/bin/python3
+
+# ── App configuration (applied to all servers in this group) ──────────────────
+# IMPORTANT: change these before running the playbook!
+adb_lab_password=change-me-strong-password
+adb_lab_ci_api_key=change-me-ci-key
+adb_lab_reservation_timeout_hours=2
+adb_lab_device_poll_interval=5
+
+# Destination path on the remote host
+adb_lab_dest=/opt/android-device-lab
+
+# System user that will own and run the service
+adb_lab_user=adb-lab
+
+# Open these ports in UFW (set to false to skip firewall config)
+adb_lab_open_firewall=true
+adb_lab_web_port=8000
+adb_lab_adb_port=5037
+
+# Restrict access to specific IP/subnet (leave empty to allow all)
+# adb_lab_allow_from=10.0.0.0/8

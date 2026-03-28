@@ -1,0 +1,123 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Approach 2: REST API Reservation
+//
+// The pipeline calls /api/ci/reserve at the start and /api/ci/release at the
+// end (in post { always {} } so it runs even on failure).
+//
+// The API auto-selects an available device matching your filter, preventing
+// two pipelines from grabbing the same device simultaneously.
+//
+// Prerequisites on the Jenkins agent:
+//   - curl and jq installed
+//   - adb installed
+//   - Network access to 172.31.254.224:8000 (API) and :5037 (ADB)
+//
+// Pros:  Automatic device selection, conflict-safe, job name shown in web UI.
+// Cons:  Slightly more pipeline boilerplate.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pipeline {
+    agent any
+
+    environment {
+        LAB_URL    = 'http://172.31.254.224:8000'
+        CI_API_KEY = credentials('adb-lab-ci-api-key')
+
+        ANDROID_ADB_SERVER_ADDRESS = '172.31.254.224'
+        ANDROID_ADB_SERVER_PORT    = '5037'
+    }
+
+    // Populated by the reserve step; used by all subsequent steps
+    // (Groovy script block sets env.ANDROID_SERIAL)
+
+    stages {
+        stage('Reserve device') {
+            steps {
+                script {
+                    // Request any available device running Android 11+ (API 30+)
+                    def response = sh(
+                        returnStdout: true,
+                        script: """
+                            curl -sf -X POST ${LAB_URL}/api/ci/reserve \\
+                                -H 'Content-Type: application/json' \\
+                                -H "X-API-Key: ${CI_API_KEY}" \\
+                                -d '{
+                                    "job_name": "${JOB_NAME}#${BUILD_NUMBER}",
+                                    "device_filter": {"min_api": 30}
+                                }'
+                        """
+                    ).trim()
+
+                    def json = readJSON text: response
+                    if (!json.ok) {
+                        error("Device reservation failed: ${response}")
+                    }
+
+                    // Make serial available to all subsequent stages
+                    env.ANDROID_SERIAL = json.serial
+                    echo "Reserved device: ${json.serial} (${json.manufacturer} ${json.model}, Android ${json.android_version})"
+                    echo "Battery: ${json.battery_level}%"
+                    echo "ADB command: ${json.adb_connect_command}"
+                }
+            }
+        }
+
+        stage('Install APK') {
+            steps {
+                sh 'adb kill-server || true'
+                sh 'adb -s ${ANDROID_SERIAL} install -r app/build/outputs/apk/debug/app-debug.apk'
+            }
+        }
+
+        stage('Run tests') {
+            steps {
+                sh '''
+                    adb -s ${ANDROID_SERIAL} shell am instrument -w \
+                        -e class com.example.SmokeTest \
+                        com.example.test/androidx.test.runner.AndroidJUnitRunner
+                '''
+            }
+        }
+
+        stage('Collect artifacts') {
+            steps {
+                sh 'adb -s ${ANDROID_SERIAL} pull /sdcard/test-results/ build/test-results/ || true'
+                sh 'adb -s ${ANDROID_SERIAL} pull /sdcard/screenshots/ build/screenshots/ || true'
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'build/screenshots/**', allowEmptyArchive: true
+                    junit allowEmptyResults: true, testResults: 'build/test-results/**/*.xml'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Always release — even if earlier stages failed
+                if (env.ANDROID_SERIAL) {
+                    try {
+                        sh """
+                            curl -sf -X POST ${LAB_URL}/api/ci/release \\
+                                -H 'Content-Type: application/json' \\
+                                -H "X-API-Key: ${CI_API_KEY}" \\
+                                -d '{"serial": "${env.ANDROID_SERIAL}", "job_name": "${JOB_NAME}#${BUILD_NUMBER}"}'
+                        """
+                        echo "Released device ${env.ANDROID_SERIAL}"
+                    } catch (e) {
+                        echo "Warning: could not release device ${env.ANDROID_SERIAL}: ${e.message}"
+                        // Auto-release timeout on the server will clean this up
+                    }
+                }
+            }
+        }
+        success {
+            echo "Pipeline passed on ${env.ANDROID_SERIAL}"
+        }
+        failure {
+            echo "Pipeline failed on ${env.ANDROID_SERIAL} — check build/screenshots/ for clues"
+        }
+    }
+}
