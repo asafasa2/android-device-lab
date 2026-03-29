@@ -62,5 +62,6 @@ DEVICE_POLL_INTERVAL    = int(os.getenv("DEVICE_POLL_INTERVAL",    "5"))
 # CI/CD integration
 ADB_LAB_CI_API_KEY  = os.getenv("ADB_LAB_CI_API_KEY",  "ci-key-change-me")
 ADB_LAB_SERVER_IP   = os.getenv("ADB_LAB_SERVER_IP") or _detect_server_ip()
+SSH_USERNAME        = os.getenv("SSH_USERNAME", "asaf")
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "lab.db")

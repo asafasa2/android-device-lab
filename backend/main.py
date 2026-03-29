@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import router as auth_router, get_session
-from .config import ADB_PATH, ADB_LAB_SERVER_IP, RESERVATION_TIMEOUT_HOURS
+from .config import ADB_PATH, ADB_LAB_SERVER_IP, RESERVATION_TIMEOUT_HOURS, SSH_USERNAME
 from .database import init_db
 from .devices import get_devices, start_polling, stop_polling
 from .reservations import (
@@ -113,6 +113,7 @@ async def status():
         "ok": True,
         "hostname": socket.gethostname(),
         "server_ip": ADB_LAB_SERVER_IP,
+        "ssh_username": SSH_USERNAME,
         "device_count": len(devices),
         "reservation_timeout_hours": RESERVATION_TIMEOUT_HOURS,
     }
