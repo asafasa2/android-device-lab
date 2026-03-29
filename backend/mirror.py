@@ -1,8 +1,11 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
+import tempfile
+import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -14,6 +17,11 @@ from .reservations import get_active_reservation
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+PNG_MAGIC = b"\x89PNG"
+FRAME_INTERVAL = 1.0        # seconds between frames (1 FPS)
+SCREENCAP_TIMEOUT = 5.0     # seconds before giving up on a single screencap
+CONSECUTIVE_FAIL_LIMIT = 3  # switch to fallback method after this many failures
+
 
 def _get_screen_size(serial: str) -> tuple[int, int]:
     """Return (width, height) from `adb shell wm size`. Falls back to 1080x1920."""
@@ -22,6 +30,8 @@ def _get_screen_size(serial: str) -> tuple[int, int]:
             [ADB_PATH, "-s", serial, "shell", "wm", "size"],
             capture_output=True, text=True, timeout=5,
         )
+        logger.info("Mirror wm size for %s: stdout=%r rc=%d",
+                     serial, result.stdout.strip(), result.returncode)
         m = re.search(r"(\d+)x(\d+)", result.stdout)
         if m:
             return int(m.group(1)), int(m.group(2))
@@ -30,22 +40,129 @@ def _get_screen_size(serial: str) -> tuple[int, int]:
     return 1080, 1920
 
 
-async def _screencap(serial: str) -> bytes | None:
-    """Run `adb exec-out screencap -p` and return PNG bytes, or None on failure."""
+async def _check_screen_on(serial: str) -> bool:
+    """Check if the device screen is on."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ADB_PATH, "-s", serial, "shell",
+            "dumpsys", "power", "|", "grep", "'Display Power'",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        output = stdout.decode(errors="replace")
+        # If "Display Power: state=OFF" or similar
+        if "state=OFF" in output:
+            return False
+    except Exception as e:
+        logger.debug("screen-on check failed for %s: %s", serial, e)
+    return True  # assume on if check fails
+
+
+async def _screencap_execout(serial: str) -> bytes | None:
+    """Primary method: `adb exec-out screencap -p` and return PNG bytes."""
+    t0 = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
             ADB_PATH, "-s", serial, "exec-out", "screencap", "-p",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-        if proc.returncode == 0 and stdout:
-            return stdout
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=SCREENCAP_TIMEOUT)
+        elapsed = time.monotonic() - t0
+
+        if proc.returncode != 0:
+            logger.warning("screencap exec-out failed for %s: rc=%d stderr=%r (%.1fs)",
+                           serial, proc.returncode, stderr.decode(errors="replace")[:200], elapsed)
+            return None
+
+        if not stdout or len(stdout) < 8:
+            logger.warning("screencap exec-out returned empty data for %s (%.1fs)", serial, elapsed)
+            return None
+
+        # Validate PNG magic bytes
+        if not stdout[:4].startswith(PNG_MAGIC[:4]):
+            logger.warning("screencap exec-out returned non-PNG data for %s: "
+                           "first 8 bytes=%r (%.1fs)", serial, stdout[:8], elapsed)
+            return None
+
+        logger.debug("screencap exec-out OK for %s: %d bytes (%.1fs)",
+                      serial, len(stdout), elapsed)
+        return stdout
+
     except asyncio.TimeoutError:
-        logger.warning("screencap timed out for %s", serial)
+        logger.warning("screencap exec-out timed out for %s (>%.0fs)", serial, SCREENCAP_TIMEOUT)
+        return None
     except Exception as e:
-        logger.warning("screencap error for %s: %s", serial, e)
-    return None
+        logger.warning("screencap exec-out error for %s: %s", serial, e)
+        return None
+
+
+async def _screencap_pull(serial: str) -> bytes | None:
+    """Fallback method: screencap to file on device, then pull it."""
+    t0 = time.monotonic()
+    remote_path = "/sdcard/adb_lab_screen.png"
+
+    try:
+        # Step 1: capture to file on device
+        proc = await asyncio.create_subprocess_exec(
+            ADB_PATH, "-s", serial, "shell", "screencap", "-p", remote_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=SCREENCAP_TIMEOUT)
+        if proc.returncode != 0:
+            logger.warning("screencap-to-file failed for %s (rc=%d)", serial, proc.returncode)
+            return None
+
+        # Step 2: pull the file
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            local_path = tmp.name
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                ADB_PATH, "-s", serial, "pull", remote_path, local_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=SCREENCAP_TIMEOUT)
+            if proc.returncode != 0:
+                logger.warning("adb pull screencap failed for %s (rc=%d)", serial, proc.returncode)
+                return None
+
+            with open(local_path, "rb") as f:
+                data = f.read()
+
+            elapsed = time.monotonic() - t0
+            if data and data[:4].startswith(PNG_MAGIC[:4]):
+                logger.debug("screencap pull OK for %s: %d bytes (%.1fs)",
+                              serial, len(data), elapsed)
+                return data
+            else:
+                logger.warning("screencap pull returned non-PNG for %s (%.1fs)", serial, elapsed)
+                return None
+        finally:
+            try:
+                os.unlink(local_path)
+            except OSError:
+                pass
+
+        # Cleanup remote file (fire and forget)
+        try:
+            await asyncio.create_subprocess_exec(
+                ADB_PATH, "-s", serial, "shell", "rm", "-f", remote_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+
+    except asyncio.TimeoutError:
+        logger.warning("screencap pull timed out for %s (>%.0fs)", serial, SCREENCAP_TIMEOUT)
+        return None
+    except Exception as e:
+        logger.warning("screencap pull error for %s: %s", serial, e)
+        return None
 
 
 async def _adb_input(serial: str, *args: str) -> None:
@@ -87,6 +204,8 @@ async def ws_mirror(websocket: WebSocket, serial: str):
 
     # Get screen dimensions once
     width, height = _get_screen_size(serial)
+    logger.info("Mirror screen size for %s: %dx%d", serial, width, height)
+
     await websocket.send_text(json.dumps({
         "type": "info",
         "width": width,
@@ -94,34 +213,72 @@ async def ws_mirror(websocket: WebSocket, serial: str):
         "serial": serial,
     }))
 
-    # ── Task: send frames every 500 ms ───────────────────────────────────────
+    # ── Task: send frames ──────────────────────────────────────────────────────
     stop_event = asyncio.Event()
+    use_pull_fallback = False
+    consecutive_fails = 0
 
     async def frame_loop() -> None:
+        nonlocal use_pull_fallback, consecutive_fails
+
         while not stop_event.is_set():
             frame_start = asyncio.get_event_loop().time()
-            png = await _screencap(serial)
+
+            # Choose screencap method
+            if use_pull_fallback:
+                png = await _screencap_pull(serial)
+            else:
+                png = await _screencap_execout(serial)
+
             if stop_event.is_set():
                 break
+
             try:
                 if png:
+                    consecutive_fails = 0
                     await websocket.send_bytes(png)
                 else:
-                    await websocket.send_text(json.dumps({
-                        "type": "error",
-                        "message": "screencap failed",
-                    }))
+                    consecutive_fails += 1
+                    logger.warning("Mirror screencap fail #%d for %s (method=%s)",
+                                   consecutive_fails, serial,
+                                   "pull" if use_pull_fallback else "exec-out")
+
+                    # Switch to pull fallback after N consecutive exec-out failures
+                    if not use_pull_fallback and consecutive_fails >= CONSECUTIVE_FAIL_LIMIT:
+                        logger.info("Mirror switching to pull fallback for %s", serial)
+                        use_pull_fallback = True
+                        consecutive_fails = 0
+                        await websocket.send_text(json.dumps({
+                            "type": "status",
+                            "message": "Switching to fallback capture method…",
+                        }))
+                        continue
+
+                    # Check if screen is off
+                    if consecutive_fails >= 2:
+                        screen_on = await _check_screen_on(serial)
+                        if not screen_on:
+                            await websocket.send_text(json.dumps({
+                                "type": "screen_off",
+                                "message": "Device screen is off — tap to wake",
+                            }))
+
+                    # If both methods fail repeatedly, send error
+                    if use_pull_fallback and consecutive_fails >= CONSECUTIVE_FAIL_LIMIT:
+                        await websocket.send_text(json.dumps({
+                            "type": "error",
+                            "message": "screencap failed — device may not support screen capture",
+                        }))
             except Exception:
                 break
+
             elapsed = asyncio.get_event_loop().time() - frame_start
-            sleep_for = max(0.0, 0.5 - elapsed)
+            sleep_for = max(0.0, FRAME_INTERVAL - elapsed)
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(asyncio.sleep(sleep_for)),
-                    timeout=sleep_for + 0.1,
-                )
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                break
+                await asyncio.wait_for(stop_event.wait(), timeout=sleep_for)
+                break  # stop_event was set
+            except asyncio.TimeoutError:
+                pass  # normal — sleep expired, loop continues
 
     # ── Task: receive input events ────────────────────────────────────────────
     async def input_loop() -> None:
@@ -139,6 +296,8 @@ async def ws_mirror(websocket: WebSocket, serial: str):
                     continue
 
                 ev_type = ev.get("type")
+                logger.debug("Mirror input for %s: %s", serial, ev_type)
+
                 if ev_type == "tap":
                     x = float(ev.get("x", 0))
                     y = float(ev.get("y", 0))
@@ -156,6 +315,26 @@ async def ws_mirror(websocket: WebSocket, serial: str):
                         serial, "swipe",
                         str(x1), str(y1), str(x2), str(y2), str(duration),
                     ))
+
+                elif ev_type == "refresh":
+                    # Manual single-frame request
+                    logger.debug("Mirror manual refresh for %s", serial)
+                    png = await _screencap_execout(serial)
+                    if not png and use_pull_fallback:
+                        png = await _screencap_pull(serial)
+                    if png:
+                        try:
+                            await websocket.send_bytes(png)
+                        except Exception:
+                            break
+                    else:
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "type": "error",
+                                "message": "Manual refresh failed — screencap error",
+                            }))
+                        except Exception:
+                            break
 
         except (WebSocketDisconnect, Exception) as exc:
             logger.debug("mirror input_loop ended: %s", exc)

@@ -340,6 +340,8 @@ resizeObserver.observe(document.getElementById('terminal-wrap'));
 // ── WebSocket state ───────────────────────────────────────────────────────────
 let ws = null;
 let encoder = new TextEncoder();
+let reconnectTimer = null;
+let sessionEnded = false;   // true when process exited normally — don't auto-reconnect
 
 // Send resize to backend whenever xterm resizes
 term.onResize(({ cols, rows }) => {
@@ -375,10 +377,22 @@ async function loadDeviceInfo() {
 function connect() {
   if (!serial) return;
 
+  // Cancel pending reconnect
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  sessionEnded = false;
+
   // Hide overlay / reconnect button
   hideOverlay();
   document.getElementById('btn-reconnect').style.display = 'none';
   setConnState('connecting', 'Connecting…');
+
+  // Clean up old WS
+  if (ws) {
+    ws.onclose = null;
+    ws.onerror = null;
+    ws.close();
+    ws = null;
+  }
 
   // Write a connecting message into the terminal
   term.writeln('\r\x1b[90m── Connecting to ' + serial + ' ──\x1b[0m');
@@ -398,11 +412,18 @@ function connect() {
     if (e.data instanceof ArrayBuffer) {
       term.write(new Uint8Array(e.data));
     } else if (typeof e.data === 'string') {
-      // Control message from server (e.g., error)
+      // Control message from server
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === 'error') {
           term.writeln('\r\n\x1b[31m' + msg.message + '\x1b[0m\r\n');
+        } else if (msg.type === 'exit') {
+          // Process exited — show clear message
+          sessionEnded = true;
+          term.writeln('\r\n\x1b[33m── ' + msg.message + ' ──\x1b[0m\r\n');
+        } else if (msg.type === 'ping') {
+          // Respond to server heartbeat
+          ws.send(JSON.stringify({ type: 'pong' }));
         }
       } catch {}
     }
@@ -430,7 +451,9 @@ function handleClose(code, reason) {
     case 1000:
       // Normal — process exited
       setConnState('error', 'Session ended');
-      term.writeln('\r\n\x1b[90m── Session ended ──\x1b[0m');
+      if (!sessionEnded) {
+        term.writeln('\r\n\x1b[33m── Session ended — device may have disconnected ──\x1b[0m');
+      }
       showReconnect();
       break;
 
@@ -443,7 +466,7 @@ function handleClose(code, reason) {
 
     case 4003:
       // Not reserved by you
-      setConnState('error', 'Access denied');
+      setConnState('error', 'Not reserved');
       showOverlay(
         '🔒',
         'Device not reserved by you',
@@ -459,7 +482,7 @@ function handleClose(code, reason) {
         '📵',
         'Device not found',
         `"${serial}" is not connected or is offline.`,
-        false
+        true
       );
       break;
 
@@ -471,16 +494,25 @@ function handleClose(code, reason) {
 
     default:
       if (code === 1001 || code === 1006) {
-        // Going away / abnormal closure — try reconnect
-        setConnState('error', 'Lost connection');
-        term.writeln('\r\n\x1b[33m── Connection lost ──\x1b[0m');
-        showReconnect();
+        // Going away / abnormal closure — auto-reconnect
+        setConnState('error', 'Reconnecting…');
+        term.writeln('\r\n\x1b[33m── Connection lost — reconnecting in 3s ──\x1b[0m');
+        scheduleReconnect();
       } else {
         setConnState('error', 'Disconnected');
         term.writeln(`\r\n\x1b[90m── Disconnected (${code}) ──\x1b[0m`);
         showReconnect();
       }
   }
+}
+
+function scheduleReconnect() {
+  showReconnect();
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, 3000);
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────────

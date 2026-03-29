@@ -62,6 +62,8 @@
       white-space: nowrap;
     }
     .btn:hover { background: var(--border); color: var(--text); }
+    .btn-accent { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn-accent:hover { background: #3a7ef0; }
 
     .hdr-title {
       font-weight: 600;
@@ -110,6 +112,7 @@
       justify-content: center;
       overflow: hidden;
       padding: 12px;
+      position: relative;
     }
 
     #mirror-canvas {
@@ -122,22 +125,40 @@
       display: block;
     }
 
-    /* ── Overlay messages ────────────────────────── */
-    #status-msg {
+    /* ── Status overlay ──────────────────────────── */
+    #status-overlay {
       position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 20px 28px;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
       text-align: center;
+      padding: 24px;
+      z-index: 10;
+    }
+    #status-overlay.hidden { display: none; }
+    .status-icon {
+      font-size: 36px;
+      line-height: 1;
+    }
+    .status-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .status-detail {
       font-size: 13px;
       color: var(--text-muted);
-      pointer-events: none;
+      max-width: 380px;
+      line-height: 1.5;
     }
-    #status-msg.hidden { display: none; }
+    .status-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
 
     .spinner {
       display: inline-block;
@@ -182,6 +203,7 @@
   <div class="hdr-title">Screen Mirror</div>
   <span class="hdr-serial" id="hdr-serial">—</span>
   <div class="hdr-spacer"></div>
+  <button class="btn" id="btn-refresh" onclick="requestRefresh()" title="Request a single frame">Refresh</button>
   <div class="status-row">
     <span class="fps-badge" id="fps-badge">— fps</span>
     <span class="ws-dot" id="ws-dot"></span>
@@ -191,7 +213,14 @@
 
 <div id="canvas-wrap">
   <canvas id="mirror-canvas"></canvas>
-  <div id="status-msg"><span class="spinner"></span>Connecting…</div>
+
+  <!-- Status overlay — shown while connecting, on error, etc. -->
+  <div id="status-overlay">
+    <div class="status-icon" id="st-icon"></div>
+    <div class="status-title" id="st-title"><span class="spinner"></span>Connecting…</div>
+    <div class="status-detail" id="st-detail"></div>
+    <div class="status-actions" id="st-actions"></div>
+  </div>
 </div>
 
 <div id="toast"></div>
@@ -216,6 +245,10 @@ let deviceH     = 1920;
 let frameCount  = 0;
 let fpsInterval = null;
 
+// First-frame timeout
+let firstFrameTimer = null;
+let gotFirstFrame   = false;
+
 // Drag tracking (for swipe)
 let dragStart   = null;   // {x, y, time} in normalized coords
 const DRAG_THRESHOLD_PX = 8;
@@ -223,26 +256,50 @@ const DRAG_THRESHOLD_PX = 8;
 // ── Canvas ────────────────────────────────────────
 const canvas    = document.getElementById('mirror-canvas');
 const ctx       = canvas.getContext('2d');
-const statusMsg = document.getElementById('status-msg');
 
-function setStatus(html) {
-  statusMsg.innerHTML = html;
-  statusMsg.classList.remove('hidden');
+// ── Status overlay helpers ────────────────────────
+function showStatus(icon, title, detail, actions) {
+  document.getElementById('st-icon').textContent   = icon;
+  document.getElementById('st-title').innerHTML     = title;
+  document.getElementById('st-detail').textContent  = detail || '';
+  const actEl = document.getElementById('st-actions');
+  actEl.innerHTML = '';
+  if (actions) actEl.innerHTML = actions;
+  document.getElementById('status-overlay').classList.remove('hidden');
 }
-function clearStatus() {
-  statusMsg.classList.add('hidden');
+
+function hideStatus() {
+  document.getElementById('status-overlay').classList.add('hidden');
 }
 
 // ── WebSocket ─────────────────────────────────────
 function connect() {
   disconnect();
+  gotFirstFrame = false;
+
+  showStatus('', '<span class="spinner"></span>Connecting…', '', '');
+
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/ws/mirror/${encodeURIComponent(serial)}`);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
     setWsState(true);
-    setStatus('<span class="spinner"></span>Waiting for first frame…');
+    showStatus('', '<span class="spinner"></span>Waiting for first frame…', '', '');
+
+    // Start timeout for first frame
+    if (firstFrameTimer) clearTimeout(firstFrameTimer);
+    firstFrameTimer = setTimeout(() => {
+      if (!gotFirstFrame) {
+        showStatus(
+          '⚠',
+          'Mirror failed',
+          'Device may not support screencap, or the screen is off.',
+          '<button class="btn btn-accent" onclick="connect()">Retry</button> ' +
+          '<a class="btn" href="/">← Back</a>'
+        );
+      }
+    }, 10000);
   };
 
   ws.onmessage = async (e) => {
@@ -255,19 +312,29 @@ function connect() {
 
   ws.onclose = (e) => {
     setWsState(false);
+    if (firstFrameTimer) { clearTimeout(firstFrameTimer); firstFrameTimer = null; }
+
     if (e.code === 1008) {
-      setStatus('Not authenticated. <a href="/" style="color:var(--accent)">Sign in</a>');
+      showStatus('🔒', 'Not authenticated',
+        'Your session has expired.',
+        '<a class="btn btn-accent" href="/">Sign in</a>');
       return;
     }
     if (e.code === 4003) {
-      setStatus('Device not reserved by you.');
+      showStatus('🔒', 'Device not reserved by you',
+        'You must reserve this device before using the mirror. Go back and click Reserve first.',
+        '<a class="btn" href="/">← Back</a>');
       return;
     }
     if (e.code === 4004) {
-      setStatus('Device offline or not found.');
+      showStatus('📵', 'Device offline',
+        'The device is not connected or not found.',
+        '<button class="btn btn-accent" onclick="connect()">Retry</button> ' +
+        '<a class="btn" href="/">← Back</a>');
       return;
     }
-    setStatus('<span class="spinner"></span>Reconnecting…');
+    // Auto-reconnect for unexpected disconnects
+    showStatus('', '<span class="spinner"></span>Reconnecting…', '', '');
     retryTimer = setTimeout(connect, 4000);
   };
 
@@ -276,6 +343,7 @@ function connect() {
 
 function disconnect() {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  if (firstFrameTimer) { clearTimeout(firstFrameTimer); firstFrameTimer = null; }
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   setWsState(false);
 }
@@ -297,21 +365,59 @@ function handleTextMsg(msg) {
   if (msg.type === 'info') {
     deviceW = msg.width  || 1080;
     deviceH = msg.height || 1920;
-    // Size the canvas to match device aspect ratio, capped to container
     sizeCanvas();
     if (msg.serial) document.getElementById('hdr-serial').textContent = msg.serial;
+
   } else if (msg.type === 'error') {
     toast(msg.message || 'screencap error', 'err');
+    // Show persistent error if no frame received yet
+    if (!gotFirstFrame) {
+      showStatus(
+        '⚠',
+        'Mirror failed',
+        msg.message || 'screencap failed — device may not support screen capture',
+        '<button class="btn btn-accent" onclick="connect()">Retry</button> ' +
+        '<a class="btn" href="/">← Back</a>'
+      );
+    }
+
+  } else if (msg.type === 'screen_off') {
+    toast(msg.message || 'Screen is off', 'err');
+    if (!gotFirstFrame) {
+      showStatus(
+        '📱',
+        'Screen is off',
+        'The device screen is off. Tap the device to wake it, then retry.',
+        '<button class="btn btn-accent" onclick="connect()">Retry</button>'
+      );
+    }
+
+  } else if (msg.type === 'status') {
+    toast(msg.message || '', '');
   }
 }
 
 async function handleFrame(buf) {
-  const blob = new Blob([buf], { type: 'image/png' });
-  const bmp  = await createImageBitmap(blob);
-  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-  bmp.close();
-  frameCount++;
-  clearStatus();
+  try {
+    const blob = new Blob([buf], { type: 'image/png' });
+    const bmp  = await createImageBitmap(blob);
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    bmp.close();
+    frameCount++;
+
+    if (!gotFirstFrame) {
+      gotFirstFrame = true;
+      if (firstFrameTimer) { clearTimeout(firstFrameTimer); firstFrameTimer = null; }
+      hideStatus();
+    }
+  } catch (e) {
+    // Corrupt frame — skip
+  }
+}
+
+// ── Manual refresh ────────────────────────────────
+function requestRefresh() {
+  send({ type: 'refresh' });
 }
 
 // ── Canvas sizing ─────────────────────────────────
@@ -351,10 +457,8 @@ canvas.addEventListener('mouseup', e => {
   const dist = Math.sqrt(dx * dx + dy * dy);
 
   if (dist < DRAG_THRESHOLD_PX) {
-    // Tap
     send({ type: 'tap', x: pos.x, y: pos.y });
   } else {
-    // Swipe
     const duration = Math.max(100, Date.now() - dragStart.time);
     send({ type: 'swipe', x1: dragStart.x, y1: dragStart.y, x2: pos.x, y2: pos.y, duration });
   }
@@ -412,7 +516,7 @@ function toast(msg, type) {
 
 // ── Boot ──────────────────────────────────────────
 if (!serial) {
-  setStatus('No device serial specified.');
+  showStatus('⚠', 'No device specified', 'Add ?serial=XXXX to the URL.', '<a class="btn" href="/">← Back</a>');
 } else {
   sizeCanvas();
   connect();
