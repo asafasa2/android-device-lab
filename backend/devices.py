@@ -5,13 +5,22 @@ import subprocess
 from datetime import datetime
 from typing import Optional
 
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+
+from .auth import get_session
 from .config import ADB_PATH, DEVICE_POLL_INTERVAL
 
 logger = logging.getLogger(__name__)
+router = APIRouter()
 
 # serial -> device info dict
 _devices: dict[str, dict] = {}
+# serial -> datetime when device went offline
+_offline_since: dict[str, datetime] = {}
 _poll_task: Optional[asyncio.Task] = None
+
+OFFLINE_REMOVAL_MINUTES = 5
 
 
 def get_devices() -> dict[str, dict]:
@@ -149,25 +158,51 @@ async def _do_poll():
 
     online_serials = set(_parse_devices(out))
     current_serials = set(_devices.keys())
+    now = datetime.utcnow()
 
-    # Mark disconnected devices as offline and remove them
-    for gone in current_serials - online_serials:
-        logger.info("Device disconnected: %s", gone)
-        del _devices[gone]
+    # ── Devices that disappeared from adb ─────────────────────────────────────
+    for serial in current_serials - online_serials:
+        if _devices[serial].get("online", True):
+            # Was online, now gone — mark offline but keep in dict
+            logger.info("Device went offline: %s", serial)
+            _devices[serial]["online"] = False
+            _offline_since[serial] = now
 
-    # New devices
-    for new in online_serials - current_serials:
-        logger.info("Device connected: %s", new)
-        info = await loop.run_in_executor(None, lambda s=new: _build_device_info(s))
-        _devices[new] = info
+    # ── Evict devices offline longer than OFFLINE_REMOVAL_MINUTES ─────────────
+    for serial in list(_offline_since):
+        since = _offline_since[serial]
+        if (now - since).total_seconds() > OFFLINE_REMOVAL_MINUTES * 60:
+            logger.info("Removing device offline for >%d min: %s",
+                        OFFLINE_REMOVAL_MINUTES, serial)
+            _devices.pop(serial, None)
+            del _offline_since[serial]
 
-    # Refresh existing devices (battery, etc.)
-    for serial in online_serials & current_serials:
-        battery = await loop.run_in_executor(
-            None, lambda s=serial: _get_battery(s)
-        )
-        _devices[serial]["battery_level"] = battery
-        _devices[serial]["last_seen"] = datetime.utcnow().isoformat()
+    # ── Devices that came back online ─────────────────────────────────────────
+    for serial in online_serials:
+        was_offline = serial in _offline_since
+        is_new = serial not in _devices
+
+        if is_new or was_offline:
+            # New device or device came back after being offline — full refresh
+            if was_offline:
+                logger.info("Device came back online: %s (was offline for %s)",
+                            serial, now - _offline_since[serial])
+                _offline_since.pop(serial, None)
+            else:
+                logger.info("New device connected: %s", serial)
+
+            info = await loop.run_in_executor(
+                None, lambda s=serial: _build_device_info(s)
+            )
+            _devices[serial] = info
+        else:
+            # Already online — just refresh battery + last_seen
+            battery = await loop.run_in_executor(
+                None, lambda s=serial: _get_battery(s)
+            )
+            _devices[serial]["battery_level"] = battery
+            _devices[serial]["last_seen"] = now.isoformat()
+            _devices[serial]["online"] = True
 
 
 def start_polling():
@@ -183,3 +218,54 @@ def stop_polling():
         _poll_task.cancel()
         _poll_task = None
     logger.info("Device polling stopped")
+
+
+# ── Reconnect endpoint ───────────────────────────────────────────────────────
+
+@router.post("/api/devices/{serial}/reconnect")
+async def reconnect_device(serial: str, request: Request):
+    session = get_session(request)
+    if not session:
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    loop = asyncio.get_event_loop()
+
+    # Step 1: adb reconnect
+    logger.info("Manual reconnect requested for %s by %s",
+                serial, session["display_name"])
+    rc, out, err = await loop.run_in_executor(
+        None, lambda: _run([ADB_PATH, "-s", serial, "reconnect"])
+    )
+    reconnect_output = out.strip() or err.strip()
+    logger.info("adb reconnect %s: rc=%d output=%r", serial, rc, reconnect_output)
+
+    # Step 2: wait for device to settle
+    await asyncio.sleep(3)
+
+    # Step 3: refresh device list
+    rc2, out2, _ = await loop.run_in_executor(
+        None, lambda: _run([ADB_PATH, "devices", "-l"])
+    )
+    online_serials = set(_parse_devices(out2)) if rc2 == 0 else set()
+
+    if serial in online_serials:
+        # Device is back — refresh its info
+        info = await loop.run_in_executor(
+            None, lambda: _build_device_info(serial)
+        )
+        _devices[serial] = info
+        _offline_since.pop(serial, None)
+        logger.info("Reconnect succeeded for %s", serial)
+        return {
+            "ok": True,
+            "serial": serial,
+            "online": True,
+            "message": "Device reconnected successfully",
+        }
+    else:
+        return {
+            "ok": False,
+            "serial": serial,
+            "online": False,
+            "message": f"Device not responding after reconnect: {reconnect_output}",
+        }

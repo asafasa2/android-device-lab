@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from .auth import router as auth_router, get_session
 from .config import ADB_PATH, ADB_LAB_SERVER_IP, RESERVATION_TIMEOUT_HOURS, SSH_USERNAME
 from .database import init_db
-from .devices import get_devices, start_polling, stop_polling
+from .devices import get_devices, start_polling, stop_polling, router as devices_router
 from .reservations import (
     router as reservations_router,
     get_all_active_reservations,
@@ -99,6 +99,7 @@ async def auth_middleware(request: Request, call_next):
 # ── Routers ───────────────────────────────────────────────────────────────────
 
 app.include_router(auth_router)
+app.include_router(devices_router)
 app.include_router(reservations_router)
 app.include_router(terminal_router)
 app.include_router(ci_router)

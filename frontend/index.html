@@ -991,6 +991,7 @@ function buildRow(dev, status) {
       if (action === 'reserve') reserveDevice(s);
       else if (action === 'release') releaseDevice(s);
       else if (action === 'adb') showAdbModal(s);
+      else if (action === 'reconnect') reconnectDevice(s, btn);
     });
   });
 
@@ -1013,11 +1014,18 @@ function buildActions(dev, status, isMe) {
     resBtn = `<button class="btn btn-ghost btn-sm" disabled>Taken</button>`;
   }
 
+  // Reconnect button for offline devices
+  let reconnBtn = '';
+  if (status === 'offline') {
+    reconnBtn = `<button class="btn btn-primary btn-sm" data-action="reconnect" data-serial="${esc(s)}">Reconnect</button>`;
+  }
+
   return `
     <div class="actions">
       <a class="btn btn-ghost btn-sm" href="/terminal.html?serial=${encodeURIComponent(s)}" target="_blank" rel="noopener">Terminal</a>
       <a class="btn btn-ghost btn-sm" href="/mirror.html?serial=${encodeURIComponent(s)}">Mirror</a>
       ${resBtn}
+      ${reconnBtn}
       <button class="btn btn-link btn-sm" data-action="adb" data-serial="${esc(s)}">ADB</button>
     </div>`;
 }
@@ -1049,6 +1057,29 @@ async function releaseDevice(serial) {
   } catch {
     toast('Network error', 'err');
   }
+}
+
+// ── Reconnect ─────────────────────────────────────
+async function reconnectDevice(serial, btn) {
+  const origText = btn.textContent;
+  btn.disabled    = true;
+  btn.textContent = 'Reconnecting…';
+  toast('Reconnecting ' + serial + '…', 'ok');
+
+  try {
+    const r    = await fetch(`/api/devices/${encodeURIComponent(serial)}/reconnect`, { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      toast(data.message || 'Reconnected ✓', 'ok');
+    } else {
+      toast(data.message || 'Reconnect failed', 'err');
+    }
+  } catch {
+    toast('Network error', 'err');
+  }
+
+  btn.disabled    = false;
+  btn.textContent = origText;
 }
 
 // ── ADB Modal ─────────────────────────────────────
