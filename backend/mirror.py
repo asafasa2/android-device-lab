@@ -6,7 +6,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import tempfile
 import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -117,45 +116,108 @@ async def _screencap_execout(serial: str) -> bytes | None:
         return None
 
 
-# ── ADB input ────────────────────────────────────────────────────────────────
+# ── Persistent ADB shell for fast input ──────────────────────────────────────
 
-async def _adb_input(serial: str, *args: str) -> bool:
-    """Run an adb input command and return True on success."""
-    cmd = [ADB_PATH, "-s", serial, "shell", "input", *args]
-    logger.info("adb input: %s", " ".join(cmd))
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        if proc.returncode != 0:
-            logger.warning("adb input failed for %s: rc=%d stdout=%r stderr=%r",
-                           serial, proc.returncode,
-                           stdout.decode(errors="replace")[:200],
-                           stderr.decode(errors="replace")[:200])
+class AdbInputShell:
+    """Keeps a persistent `adb shell` process open and pipes input commands
+    through stdin.  ~10x faster than spawning a new process per tap."""
+
+    def __init__(self, serial: str):
+        self._serial = serial
+        self._proc: asyncio.subprocess.Process | None = None
+
+    async def start(self) -> bool:
+        """Open the persistent shell. Returns True on success."""
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                ADB_PATH, "-s", self._serial, "shell",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            logger.info("Persistent input shell opened for %s (pid=%d)",
+                        self._serial, self._proc.pid)
+            return True
+        except Exception as e:
+            logger.warning("Failed to open persistent input shell for %s: %s",
+                           self._serial, e)
+            self._proc = None
             return False
-        logger.debug("adb input OK for %s: %s", serial, " ".join(args))
-        return True
-    except asyncio.TimeoutError:
-        logger.warning("adb input timed out for %s: %s", serial, " ".join(args))
-        return False
-    except Exception as e:
-        logger.warning("adb input error for %s: %s", serial, e)
-        return False
 
+    @property
+    def alive(self) -> bool:
+        return self._proc is not None and self._proc.returncode is None
 
-async def _adb_keyevent(serial: str, keycode: int) -> bool:
-    """Send a keyevent to the device."""
-    return await _adb_input(serial, "keyevent", str(keycode))
+    async def _send(self, cmd: str) -> bool:
+        """Write a command line to the shell's stdin."""
+        if not self.alive:
+            logger.warning("Input shell dead for %s — respawning", self._serial)
+            if not await self.start():
+                return False
 
+        try:
+            self._proc.stdin.write((cmd + "\n").encode())
+            await self._proc.stdin.drain()
+            logger.debug("input shell cmd for %s: %s", self._serial, cmd)
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            logger.warning("Input shell write failed for %s: %s — respawning",
+                           self._serial, e)
+            await self.close()
+            if await self.start():
+                try:
+                    self._proc.stdin.write((cmd + "\n").encode())
+                    await self._proc.stdin.drain()
+                    return True
+                except Exception as e2:
+                    logger.warning("Input shell retry failed for %s: %s",
+                                   self._serial, e2)
+            return False
+        except Exception as e:
+            logger.warning("Input shell error for %s: %s", self._serial, e)
+            return False
 
-async def _adb_text(serial: str, text: str) -> bool:
-    """Type text on the device. Escapes special characters."""
-    # adb shell input text needs special chars escaped
-    safe = text.replace("\\", "\\\\").replace(" ", "%s").replace("'", "\\'").replace('"', '\\"')
-    return await _adb_input(serial, "text", safe)
+    async def tap(self, x: int, y: int) -> bool:
+        cmd = f"input tap {x} {y}"
+        logger.info("Mirror tap for %s: px=(%d, %d)", self._serial, x, y)
+        return await self._send(cmd)
+
+    async def swipe(self, x1: int, y1: int, x2: int, y2: int, duration: int) -> bool:
+        cmd = f"input swipe {x1} {y1} {x2} {y2} {duration}"
+        logger.info("Mirror swipe for %s: (%d,%d)->(%d,%d) %dms",
+                     self._serial, x1, y1, x2, y2, duration)
+        return await self._send(cmd)
+
+    async def keyevent(self, keycode: int) -> bool:
+        cmd = f"input keyevent {keycode}"
+        logger.info("Mirror keyevent for %s: %d", self._serial, keycode)
+        return await self._send(cmd)
+
+    async def text(self, text: str) -> bool:
+        safe = text.replace("\\", "\\\\").replace(" ", "%s").replace("'", "\\'").replace('"', '\\"')
+        cmd = f"input text {safe}"
+        logger.info("Mirror text for %s: %r", self._serial, text[:50])
+        return await self._send(cmd)
+
+    async def close(self):
+        """Terminate the persistent shell."""
+        if self._proc is None:
+            return
+        pid = self._proc.pid
+        try:
+            self._proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self._proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(self._proc.wait(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        self._proc = None
+        logger.info("Persistent input shell closed for %s (pid=%d)", self._serial, pid)
 
 
 # ── Screenrecord + ffmpeg streaming ──────────────────────────────────────────
@@ -294,6 +356,10 @@ async def ws_mirror(websocket: WebSocket, serial: str):
 
     stop_event = asyncio.Event()
 
+    # ── Persistent input shell ─────────────────────────────────────────────────
+    input_shell = AdbInputShell(serial)
+    await input_shell.start()
+
     # ── Frame loop ────────────────────────────────────────────────────────────
     async def frame_loop() -> None:
         if use_streaming:
@@ -358,9 +424,7 @@ async def ws_mirror(websocket: WebSocket, serial: str):
                     ny = float(ev.get("y", 0))
                     px = int(nx * width)
                     py = int(ny * height)
-                    logger.info("Mirror tap for %s: norm=(%.3f, %.3f) -> px=(%d, %d) "
-                                "display=%dx%d", serial, nx, ny, px, py, width, height)
-                    await _adb_input(serial, "tap", str(px), str(py))
+                    await input_shell.tap(px, py)
 
                 elif ev_type == "swipe":
                     nx1, ny1 = float(ev.get("x1", 0)), float(ev.get("y1", 0))
@@ -368,23 +432,16 @@ async def ws_mirror(websocket: WebSocket, serial: str):
                     px1, py1 = int(nx1 * width), int(ny1 * height)
                     px2, py2 = int(nx2 * width), int(ny2 * height)
                     duration = int(ev.get("duration", 300))
-                    logger.info("Mirror swipe for %s: (%d,%d)->(%d,%d) %dms",
-                                serial, px1, py1, px2, py2, duration)
-                    await _adb_input(
-                        serial, "swipe",
-                        str(px1), str(py1), str(px2), str(py2), str(duration),
-                    )
+                    await input_shell.swipe(px1, py1, px2, py2, duration)
 
                 elif ev_type == "keyevent":
                     code = int(ev.get("code", 0))
-                    logger.info("Mirror keyevent for %s: %d", serial, code)
-                    await _adb_keyevent(serial, code)
+                    await input_shell.keyevent(code)
 
                 elif ev_type == "text":
                     t = ev.get("text", "")
                     if t:
-                        logger.info("Mirror text for %s: %r", serial, t[:50])
-                        await _adb_text(serial, t)
+                        await input_shell.text(t)
 
                 elif ev_type == "refresh":
                     logger.debug("Mirror manual refresh for %s", serial)
@@ -422,6 +479,7 @@ async def ws_mirror(websocket: WebSocket, serial: str):
                 pass
     finally:
         stop_event.set()
+        await input_shell.close()
         try:
             await websocket.close()
         except Exception:
