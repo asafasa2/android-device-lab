@@ -39,11 +39,19 @@ def _run(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
 
 
 def ensure_adb_server():
-    """Start adb server listening on all interfaces."""
-    logger.info("Starting adb server on 0.0.0.0:5037")
+    """Kill any existing adb server and restart it listening on all interfaces.
+
+    We always kill first: if the server was previously started without -a (the
+    default, which binds to 127.0.0.1 only), adb start-server will detect it
+    alive and skip re-launching — leaving the port inaccessible from the LAN.
+    """
+    logger.info("Restarting adb server to listen on 0.0.0.0:5037")
+    _run([ADB_PATH, "kill-server"])
     rc, out, err = _run([ADB_PATH, "-a", "-P", "5037", "start-server"])
     if rc != 0:
         logger.warning("adb start-server returned %d: %s", rc, err)
+    else:
+        logger.info("adb server started on 0.0.0.0:5037")
 
 
 def _parse_devices(output: str) -> list[str]:
