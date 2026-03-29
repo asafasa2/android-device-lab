@@ -94,7 +94,7 @@
       flex-shrink: 0;
     }
     .ws-dot.live { background: var(--green); }
-    .fps-badge {
+    .badge {
       font-family: var(--mono);
       font-size: 11px;
       color: var(--text-muted);
@@ -103,6 +103,7 @@
       border-radius: 4px;
       padding: 2px 7px;
     }
+    .badge-stream { color: var(--green); border-color: rgba(34,197,94,0.3); }
 
     /* ── Canvas area ─────────────────────────────── */
     #canvas-wrap {
@@ -113,6 +114,7 @@
       overflow: hidden;
       padding: 12px;
       position: relative;
+      outline: none;
     }
 
     #mirror-canvas {
@@ -123,6 +125,55 @@
       max-height: 100%;
       image-rendering: auto;
       display: block;
+    }
+
+    /* ── Device buttons bar ──────────────────────── */
+    #device-buttons {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 16px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .dev-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 7px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      color: var(--text-muted);
+      background: var(--card);
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .dev-btn:hover {
+      background: var(--border);
+      color: var(--text);
+      border-color: var(--border-light);
+    }
+    .dev-btn:active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .dev-btn-icon {
+      font-size: 14px;
+      line-height: 1;
+    }
+    .btn-sep {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+      margin: 0 4px;
+      flex-shrink: 0;
     }
 
     /* ── Status overlay ──────────────────────────── */
@@ -139,31 +190,14 @@
       z-index: 10;
     }
     #status-overlay.hidden { display: none; }
-    .status-icon {
-      font-size: 36px;
-      line-height: 1;
-    }
-    .status-title {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text);
-    }
-    .status-detail {
-      font-size: 13px;
-      color: var(--text-muted);
-      max-width: 380px;
-      line-height: 1.5;
-    }
-    .status-actions {
-      display: flex;
-      gap: 8px;
-      margin-top: 4px;
-    }
+    .status-icon { font-size: 36px; line-height: 1; }
+    .status-title { font-size: 16px; font-weight: 600; color: var(--text); }
+    .status-detail { font-size: 13px; color: var(--text-muted); max-width: 380px; line-height: 1.5; }
+    .status-actions { display: flex; gap: 8px; margin-top: 4px; }
 
     .spinner {
       display: inline-block;
-      width: 16px;
-      height: 16px;
+      width: 16px; height: 16px;
       border: 2px solid var(--border);
       border-top-color: var(--accent);
       border-radius: 50%;
@@ -175,20 +209,16 @@
 
     /* ── Toast ───────────────────────────────────── */
     #toast {
-      position: fixed;
-      bottom: 18px;
-      right: 18px;
+      position: fixed; bottom: 18px; right: 18px;
       background: var(--surface);
       border: 1px solid var(--border);
       border-left: 3px solid var(--accent);
       border-radius: 7px;
-      padding: 10px 15px;
-      font-size: 12px;
+      padding: 10px 15px; font-size: 12px;
       max-width: 260px;
       box-shadow: 0 8px 28px rgba(0,0,0,0.45);
       z-index: 1000;
-      opacity: 0;
-      transform: translateY(6px);
+      opacity: 0; transform: translateY(6px);
       transition: opacity 0.2s, transform 0.2s;
       pointer-events: none;
     }
@@ -198,21 +228,36 @@
     /* ── Tap ripple ──────────────────────────────── */
     .tap-ripple {
       position: absolute;
-      width: 36px;
-      height: 36px;
-      margin-left: -18px;
-      margin-top: -18px;
+      width: 36px; height: 36px;
+      margin-left: -18px; margin-top: -18px;
       border-radius: 50%;
       border: 2px solid var(--accent);
       background: rgba(79, 142, 247, 0.25);
-      pointer-events: none;
-      z-index: 20;
+      pointer-events: none; z-index: 20;
       animation: ripple-out 0.45s ease-out forwards;
     }
     @keyframes ripple-out {
       0%   { transform: scale(0.3); opacity: 1; }
       100% { transform: scale(1.4); opacity: 0; }
     }
+
+    /* ── Keyboard focus hint ─────────────────────── */
+    #kbd-hint {
+      position: absolute;
+      bottom: 8px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 11px;
+      color: var(--text-muted);
+      background: rgba(18,18,42,0.85);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 3px 10px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 15;
+    }
+    #kbd-hint.show { opacity: 1; }
   </style>
 </head>
 <body>
@@ -224,22 +269,48 @@
   <div class="hdr-spacer"></div>
   <button class="btn" id="btn-refresh" onclick="requestRefresh()" title="Request a single frame">Refresh</button>
   <div class="status-row">
-    <span class="fps-badge" id="fps-badge">— fps</span>
+    <span class="badge" id="mode-badge">—</span>
+    <span class="badge" id="fps-badge">— fps</span>
     <span class="ws-dot" id="ws-dot"></span>
     <span id="ws-label">Connecting…</span>
   </div>
 </header>
 
-<div id="canvas-wrap">
+<div id="canvas-wrap" tabindex="0">
   <canvas id="mirror-canvas"></canvas>
 
-  <!-- Status overlay — shown while connecting, on error, etc. -->
   <div id="status-overlay">
     <div class="status-icon" id="st-icon"></div>
     <div class="status-title" id="st-title"><span class="spinner"></span>Connecting…</div>
     <div class="status-detail" id="st-detail"></div>
     <div class="status-actions" id="st-actions"></div>
   </div>
+
+  <div id="kbd-hint">Click here, then type — keys go to device</div>
+</div>
+
+<!-- Device hardware buttons -->
+<div id="device-buttons">
+  <button class="dev-btn" onclick="sendKey(4)"  title="Back">
+    <span class="dev-btn-icon">&#9664;</span> Back
+  </button>
+  <button class="dev-btn" onclick="sendKey(3)"  title="Home">
+    <span class="dev-btn-icon">&#9679;</span> Home
+  </button>
+  <button class="dev-btn" onclick="sendKey(187)" title="Recent Apps">
+    <span class="dev-btn-icon">&#9632;</span> Recent
+  </button>
+  <div class="btn-sep"></div>
+  <button class="dev-btn" onclick="sendKey(24)" title="Volume Up">
+    Vol +
+  </button>
+  <button class="dev-btn" onclick="sendKey(25)" title="Volume Down">
+    Vol -
+  </button>
+  <div class="btn-sep"></div>
+  <button class="dev-btn" onclick="sendKey(26)" title="Power / Wake">
+    Power
+  </button>
 </div>
 
 <div id="toast"></div>
@@ -259,6 +330,7 @@ let toastTimer  = null;
 
 let deviceW     = 1080;
 let deviceH     = 1920;
+let mirrorMode  = 'screencap';
 
 // FPS tracking
 let frameCount  = 0;
@@ -269,12 +341,16 @@ let firstFrameTimer = null;
 let gotFirstFrame   = false;
 
 // Drag tracking (for swipe)
-let dragStart   = null;   // {x, y, time} in normalized coords
+let dragStart   = null;
 const DRAG_THRESHOLD_PX = 8;
+
+// Keyboard focus hint
+let kbdHintTimer = null;
 
 // ── Canvas ────────────────────────────────────────
 const canvas    = document.getElementById('mirror-canvas');
 const ctx       = canvas.getContext('2d');
+const canvasWrap = document.getElementById('canvas-wrap');
 
 // ── Status overlay helpers ────────────────────────
 function showStatus(icon, title, detail, actions) {
@@ -306,19 +382,15 @@ function connect() {
     setWsState(true);
     showStatus('', '<span class="spinner"></span>Waiting for first frame…', '', '');
 
-    // Start timeout for first frame
     if (firstFrameTimer) clearTimeout(firstFrameTimer);
     firstFrameTimer = setTimeout(() => {
       if (!gotFirstFrame) {
-        showStatus(
-          '⚠',
-          'Mirror failed',
+        showStatus('⚠', 'Mirror failed',
           'Device may not support screencap, or the screen is off.',
           '<button class="btn btn-accent" onclick="connect()">Retry</button> ' +
-          '<a class="btn" href="/">← Back</a>'
-        );
+          '<a class="btn" href="/">← Back</a>');
       }
-    }, 10000);
+    }, 15000);
   };
 
   ws.onmessage = async (e) => {
@@ -334,8 +406,7 @@ function connect() {
     if (firstFrameTimer) { clearTimeout(firstFrameTimer); firstFrameTimer = null; }
 
     if (e.code === 1008) {
-      showStatus('🔒', 'Not authenticated',
-        'Your session has expired.',
+      showStatus('🔒', 'Not authenticated', 'Your session has expired.',
         '<a class="btn btn-accent" href="/">Sign in</a>');
       return;
     }
@@ -346,13 +417,11 @@ function connect() {
       return;
     }
     if (e.code === 4004) {
-      showStatus('📵', 'Device offline',
-        'The device is not connected or not found.',
+      showStatus('📵', 'Device offline', 'The device is not connected or not found.',
         '<button class="btn btn-accent" onclick="connect()">Retry</button> ' +
         '<a class="btn" href="/">← Back</a>');
       return;
     }
-    // Auto-reconnect for unexpected disconnects
     showStatus('', '<span class="spinner"></span>Reconnecting…', '', '');
     retryTimer = setTimeout(connect, 4000);
   };
@@ -384,31 +453,34 @@ function handleTextMsg(msg) {
   if (msg.type === 'info') {
     deviceW = msg.width  || 1080;
     deviceH = msg.height || 1920;
+    mirrorMode = msg.mode || 'screencap';
     sizeCanvas();
     if (msg.serial) document.getElementById('hdr-serial').textContent = msg.serial;
 
+    const modeBadge = document.getElementById('mode-badge');
+    if (mirrorMode === 'streaming') {
+      modeBadge.textContent = '~5 fps';
+      modeBadge.classList.add('badge-stream');
+    } else {
+      modeBadge.textContent = '1 fps';
+      modeBadge.classList.remove('badge-stream');
+    }
+
   } else if (msg.type === 'error') {
     toast(msg.message || 'screencap error', 'err');
-    // Show persistent error if no frame received yet
     if (!gotFirstFrame) {
-      showStatus(
-        '⚠',
-        'Mirror failed',
+      showStatus('⚠', 'Mirror failed',
         msg.message || 'screencap failed — device may not support screen capture',
         '<button class="btn btn-accent" onclick="connect()">Retry</button> ' +
-        '<a class="btn" href="/">← Back</a>'
-      );
+        '<a class="btn" href="/">← Back</a>');
     }
 
   } else if (msg.type === 'screen_off') {
     toast(msg.message || 'Screen is off', 'err');
     if (!gotFirstFrame) {
-      showStatus(
-        '📱',
-        'Screen is off',
-        'The device screen is off. Tap the device to wake it, then retry.',
-        '<button class="btn btn-accent" onclick="connect()">Retry</button>'
-      );
+      showStatus('📱', 'Screen is off',
+        'The device screen is off. Tap the device or press Power to wake it.',
+        '<button class="btn btn-accent" onclick="sendKey(26); setTimeout(connect,1500)">Wake + Retry</button>');
     }
 
   } else if (msg.type === 'status') {
@@ -418,7 +490,12 @@ function handleTextMsg(msg) {
 
 async function handleFrame(buf) {
   try {
-    const blob = new Blob([buf], { type: 'image/png' });
+    // Auto-detect JPEG vs PNG from magic bytes
+    const bytes = new Uint8Array(buf);
+    const isJpeg = bytes[0] === 0xFF && bytes[1] === 0xD8;
+    const mime = isJpeg ? 'image/jpeg' : 'image/png';
+
+    const blob = new Blob([buf], { type: mime });
     const bmp  = await createImageBitmap(blob);
     ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
     bmp.close();
@@ -428,9 +505,11 @@ async function handleFrame(buf) {
       gotFirstFrame = true;
       if (firstFrameTimer) { clearTimeout(firstFrameTimer); firstFrameTimer = null; }
       hideStatus();
+      // Focus canvas for keyboard input
+      canvasWrap.focus();
     }
   } catch (e) {
-    // Corrupt frame — skip
+    // Corrupt frame — skip silently
   }
 }
 
@@ -454,7 +533,7 @@ function sizeCanvas() {
 
 window.addEventListener('resize', sizeCanvas);
 
-// ── Input events ──────────────────────────────────
+// ── Touch / mouse input ──────────────────────────
 function canvasNorm(e) {
   const rect = canvas.getBoundingClientRect();
   return {
@@ -464,13 +543,12 @@ function canvasNorm(e) {
 }
 
 function showRipple(clientX, clientY) {
-  const wrap = document.getElementById('canvas-wrap');
-  const wrapRect = wrap.getBoundingClientRect();
+  const wrapRect = canvasWrap.getBoundingClientRect();
   const ripple = document.createElement('div');
   ripple.className = 'tap-ripple';
   ripple.style.left = (clientX - wrapRect.left) + 'px';
   ripple.style.top  = (clientY - wrapRect.top)  + 'px';
-  wrap.appendChild(ripple);
+  canvasWrap.appendChild(ripple);
   ripple.addEventListener('animationend', () => ripple.remove());
 }
 
@@ -525,6 +603,50 @@ canvas.addEventListener('touchend', e => {
   dragStart = null;
 }, { passive: false });
 
+// ── Keyboard input ────────────────────────────────
+// JS key → Android keyevent code
+const KEY_MAP = {
+  'Enter':      66,
+  'Backspace':  67,
+  'Delete':     112,
+  'Escape':     4,   // Back
+  'Tab':        61,
+  'ArrowUp':    19,
+  'ArrowDown':  20,
+  'ArrowLeft':  21,
+  'ArrowRight': 22,
+  'Home':       3,
+  ' ':          62,  // Space
+};
+
+canvasWrap.addEventListener('keydown', e => {
+  // Don't capture if typing in an input field
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  const keycode = KEY_MAP[e.key];
+  if (keycode !== undefined) {
+    e.preventDefault();
+    sendKey(keycode);
+  } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    // Single printable character
+    e.preventDefault();
+    send({ type: 'text', text: e.key });
+  }
+});
+
+// Show keyboard hint when canvas gets focus
+canvasWrap.addEventListener('focus', () => {
+  const hint = document.getElementById('kbd-hint');
+  hint.classList.add('show');
+  if (kbdHintTimer) clearTimeout(kbdHintTimer);
+  kbdHintTimer = setTimeout(() => hint.classList.remove('show'), 3000);
+});
+
+// ── Device button helpers ─────────────────────────
+function sendKey(code) {
+  send({ type: 'keyevent', code });
+}
+
 function send(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
@@ -548,7 +670,8 @@ function toast(msg, type) {
 
 // ── Boot ──────────────────────────────────────────
 if (!serial) {
-  showStatus('⚠', 'No device specified', 'Add ?serial=XXXX to the URL.', '<a class="btn" href="/">← Back</a>');
+  showStatus('⚠', 'No device specified', 'Add ?serial=XXXX to the URL.',
+    '<a class="btn" href="/">← Back</a>');
 } else {
   sizeCanvas();
   connect();
