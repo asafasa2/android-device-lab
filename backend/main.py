@@ -85,7 +85,8 @@ async def auth_middleware(request: Request, call_next):
         or path.startswith("/api/ci/")
         or path.startswith("/assets/")
         or path.startswith("/static/")
-        or not (path.startswith("/api/") or path.startswith("/ws/"))
+        or path.startswith("/ws/")
+        or not path.startswith("/api/")
     ):
         return await call_next(request)
 
