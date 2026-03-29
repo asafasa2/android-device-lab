@@ -194,6 +194,25 @@
     }
     #toast.show { opacity: 1; transform: translateY(0); }
     #toast.err  { border-left-color: var(--red); }
+
+    /* ── Tap ripple ──────────────────────────────── */
+    .tap-ripple {
+      position: absolute;
+      width: 36px;
+      height: 36px;
+      margin-left: -18px;
+      margin-top: -18px;
+      border-radius: 50%;
+      border: 2px solid var(--accent);
+      background: rgba(79, 142, 247, 0.25);
+      pointer-events: none;
+      z-index: 20;
+      animation: ripple-out 0.45s ease-out forwards;
+    }
+    @keyframes ripple-out {
+      0%   { transform: scale(0.3); opacity: 1; }
+      100% { transform: scale(1.4); opacity: 0; }
+    }
   </style>
 </head>
 <body>
@@ -444,6 +463,17 @@ function canvasNorm(e) {
   };
 }
 
+function showRipple(clientX, clientY) {
+  const wrap = document.getElementById('canvas-wrap');
+  const wrapRect = wrap.getBoundingClientRect();
+  const ripple = document.createElement('div');
+  ripple.className = 'tap-ripple';
+  ripple.style.left = (clientX - wrapRect.left) + 'px';
+  ripple.style.top  = (clientY - wrapRect.top)  + 'px';
+  wrap.appendChild(ripple);
+  ripple.addEventListener('animationend', () => ripple.remove());
+}
+
 canvas.addEventListener('mousedown', e => {
   const pos = canvasNorm(e);
   dragStart = { ...pos, time: Date.now(), clientX: e.clientX, clientY: e.clientY };
@@ -457,6 +487,7 @@ canvas.addEventListener('mouseup', e => {
   const dist = Math.sqrt(dx * dx + dy * dy);
 
   if (dist < DRAG_THRESHOLD_PX) {
+    showRipple(e.clientX, e.clientY);
     send({ type: 'tap', x: pos.x, y: pos.y });
   } else {
     const duration = Math.max(100, Date.now() - dragStart.time);
@@ -485,6 +516,7 @@ canvas.addEventListener('touchend', e => {
   const dist = Math.sqrt(dx * dx + dy * dy);
 
   if (dist < DRAG_THRESHOLD_PX) {
+    showRipple(t.clientX, t.clientY);
     send({ type: 'tap', x: pos.x, y: pos.y });
   } else {
     const duration = Math.max(100, Date.now() - dragStart.time);

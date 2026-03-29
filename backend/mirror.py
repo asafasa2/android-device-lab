@@ -40,19 +40,35 @@ def _get_screen_size(serial: str) -> tuple[int, int]:
     return 1080, 1920
 
 
+def _get_orientation(serial: str) -> int:
+    """Return current display orientation (0=portrait, 1=landscape CW, 2=reverse, 3=landscape CCW)."""
+    try:
+        result = subprocess.run(
+            [ADB_PATH, "-s", serial, "shell", "dumpsys", "input"],
+            capture_output=True, text=True, timeout=5,
+        )
+        # Look for SurfaceOrientation
+        m = re.search(r"SurfaceOrientation:\s*(\d)", result.stdout)
+        if m:
+            orientation = int(m.group(1))
+            logger.debug("Device %s orientation: %d", serial, orientation)
+            return orientation
+    except Exception as e:
+        logger.debug("orientation check failed for %s: %s", serial, e)
+    return 0
+
+
 async def _check_screen_on(serial: str) -> bool:
     """Check if the device screen is on."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            ADB_PATH, "-s", serial, "shell",
-            "dumpsys", "power", "|", "grep", "'Display Power'",
+            ADB_PATH, "-s", serial, "shell", "dumpsys", "power",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
         output = stdout.decode(errors="replace")
-        # If "Display Power: state=OFF" or similar
-        if "state=OFF" in output:
+        if "Display Power: state=OFF" in output:
             return False
     except Exception as e:
         logger.debug("screen-on check failed for %s: %s", serial, e)
@@ -146,16 +162,15 @@ async def _screencap_pull(serial: str) -> bytes | None:
                 os.unlink(local_path)
             except OSError:
                 pass
-
-        # Cleanup remote file (fire and forget)
-        try:
-            await asyncio.create_subprocess_exec(
-                ADB_PATH, "-s", serial, "shell", "rm", "-f", remote_path,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
+            # Cleanup remote file (fire and forget)
+            try:
+                await asyncio.create_subprocess_exec(
+                    ADB_PATH, "-s", serial, "shell", "rm", "-f", remote_path,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
 
     except asyncio.TimeoutError:
         logger.warning("screencap pull timed out for %s (>%.0fs)", serial, SCREENCAP_TIMEOUT)
@@ -165,17 +180,31 @@ async def _screencap_pull(serial: str) -> bytes | None:
         return None
 
 
-async def _adb_input(serial: str, *args: str) -> None:
-    """Fire-and-forget adb input command."""
+async def _adb_input(serial: str, *args: str) -> bool:
+    """Run an adb input command and return True on success."""
+    cmd = [ADB_PATH, "-s", serial, "shell", "input", *args]
+    logger.info("adb input: %s", " ".join(cmd))
     try:
         proc = await asyncio.create_subprocess_exec(
-            ADB_PATH, "-s", serial, "shell", "input", *args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        if proc.returncode != 0:
+            logger.warning("adb input failed for %s: rc=%d stdout=%r stderr=%r",
+                           serial, proc.returncode,
+                           stdout.decode(errors="replace")[:200],
+                           stderr.decode(errors="replace")[:200])
+            return False
+        logger.debug("adb input OK for %s: %s", serial, " ".join(args))
+        return True
+    except asyncio.TimeoutError:
+        logger.warning("adb input timed out for %s: %s", serial, " ".join(args))
+        return False
     except Exception as e:
-        logger.debug("adb input error for %s: %s", serial, e)
+        logger.warning("adb input error for %s: %s", serial, e)
+        return False
 
 
 @router.websocket("/ws/mirror/{serial}")
@@ -202,9 +231,19 @@ async def ws_mirror(websocket: WebSocket, serial: str):
     await websocket.accept()
     logger.info("Mirror open: serial=%s user=%s", serial, display_name)
 
-    # Get screen dimensions once
-    width, height = _get_screen_size(serial)
-    logger.info("Mirror screen size for %s: %dx%d", serial, width, height)
+    # Get screen dimensions and orientation
+    phys_w, phys_h = _get_screen_size(serial)
+    orientation = _get_orientation(serial)
+
+    # wm size returns physical dimensions (always portrait-oriented)
+    # If device is in landscape (orientation 1 or 3), swap for display coords
+    if orientation in (1, 3):
+        width, height = phys_h, phys_w
+    else:
+        width, height = phys_w, phys_h
+
+    logger.info("Mirror for %s: physical=%dx%d orientation=%d display=%dx%d",
+                serial, phys_w, phys_h, orientation, width, height)
 
     await websocket.send_text(json.dumps({
         "type": "info",
@@ -296,28 +335,31 @@ async def ws_mirror(websocket: WebSocket, serial: str):
                     continue
 
                 ev_type = ev.get("type")
-                logger.debug("Mirror input for %s: %s", serial, ev_type)
 
                 if ev_type == "tap":
-                    x = float(ev.get("x", 0))
-                    y = float(ev.get("y", 0))
-                    px = int(x * width)
-                    py = int(y * height)
-                    asyncio.create_task(_adb_input(serial, "tap", str(px), str(py)))
+                    nx = float(ev.get("x", 0))
+                    ny = float(ev.get("y", 0))
+                    px = int(nx * width)
+                    py = int(ny * height)
+                    logger.info("Mirror tap for %s: norm=(%.3f, %.3f) → px=(%d, %d) "
+                                "display=%dx%d", serial, nx, ny, px, py, width, height)
+                    await _adb_input(serial, "tap", str(px), str(py))
 
                 elif ev_type == "swipe":
-                    x1 = int(float(ev.get("x1", 0)) * width)
-                    y1 = int(float(ev.get("y1", 0)) * height)
-                    x2 = int(float(ev.get("x2", 0)) * width)
-                    y2 = int(float(ev.get("y2", 0)) * height)
+                    nx1, ny1 = float(ev.get("x1", 0)), float(ev.get("y1", 0))
+                    nx2, ny2 = float(ev.get("x2", 0)), float(ev.get("y2", 0))
+                    px1, py1 = int(nx1 * width), int(ny1 * height)
+                    px2, py2 = int(nx2 * width), int(ny2 * height)
                     duration = int(ev.get("duration", 300))
-                    asyncio.create_task(_adb_input(
+                    logger.info("Mirror swipe for %s: (%d,%d)→(%d,%d) %dms "
+                                "display=%dx%d", serial, px1, py1, px2, py2,
+                                duration, width, height)
+                    await _adb_input(
                         serial, "swipe",
-                        str(x1), str(y1), str(x2), str(y2), str(duration),
-                    ))
+                        str(px1), str(py1), str(px2), str(py2), str(duration),
+                    )
 
                 elif ev_type == "refresh":
-                    # Manual single-frame request
                     logger.debug("Mirror manual refresh for %s", serial)
                     png = await _screencap_execout(serial)
                     if not png and use_pull_fallback:
