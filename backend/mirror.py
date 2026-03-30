@@ -222,24 +222,40 @@ class AdbInputShell:
 
 # ── Screenrecord + ffmpeg streaming ──────────────────────────────────────────
 
-async def _stream_screenrecord(serial: str, stop_event: asyncio.Event,
-                                websocket: WebSocket) -> None:
+SCREENRECORD_READ_TIMEOUT = 20.0   # allow time for pipeline startup/buffering
+SCREENRECORD_ZERO_FRAME_LIMIT = 2  # fall back after N consecutive 0-frame attempts
+
+
+async def _stream_screenrecord(serial: str, phys_w: int, phys_h: int,
+                                stop_event: asyncio.Event,
+                                websocket: WebSocket) -> bool:
     """Stream JPEG frames via screenrecord piped through ffmpeg.
-    Restarts the pipeline when screenrecord hits its time limit."""
+    Restarts the pipeline when screenrecord hits its time limit.
+    Returns True if frames were produced, False if the device doesn't
+    support screenrecord (caller should fall back to screencap)."""
 
     safe_adb = shlex.quote(ADB_PATH)
     safe_serial = shlex.quote(serial)
 
+    # Half-resolution for screenrecord (keep aspect ratio, even numbers)
+    rec_w = (phys_w // 2) & ~1  # round down to even
+    rec_h = (phys_h // 2) & ~1
+
+    consecutive_zero = 0
+
     while not stop_event.is_set():
-        logger.info("Starting screenrecord+ffmpeg pipeline for %s", serial)
+        logger.info("Starting screenrecord+ffmpeg pipeline for %s (%dx%d)",
+                    serial, rec_w, rec_h)
 
         cmd = (
             f"{safe_adb} -s {safe_serial} exec-out screenrecord"
-            f" --output-format=h264 --time-limit {SCREENRECORD_MAX_SEC} - | "
-            f"ffmpeg -loglevel error -probesize 500k -analyzeduration 500k"
+            f" --output-format=h264 --bit-rate 2000000"
+            f" --size {rec_w}x{rec_h}"
+            f" --time-limit {SCREENRECORD_MAX_SEC} - | "
+            f"ffmpeg -loglevel error -probesize 100k -analyzeduration 100k"
             f" -i pipe:0 -f image2pipe"
-            f" -vf 'fps=5,scale=-1:720'"
-            f" -q:v 5 -c:v mjpeg pipe:1"
+            f" -vf fps=3"
+            f" -q:v 8 -c:v mjpeg pipe:1"
         )
         proc = await asyncio.create_subprocess_shell(
             cmd,
@@ -254,7 +270,9 @@ async def _stream_screenrecord(serial: str, stop_event: asyncio.Event,
         try:
             while not stop_event.is_set():
                 try:
-                    chunk = await asyncio.wait_for(proc.stdout.read(65536), timeout=10.0)
+                    chunk = await asyncio.wait_for(
+                        proc.stdout.read(65536), timeout=SCREENRECORD_READ_TIMEOUT,
+                    )
                 except asyncio.TimeoutError:
                     logger.warning("screenrecord read timeout for %s", serial)
                     break
@@ -272,7 +290,6 @@ async def _stream_screenrecord(serial: str, stop_event: asyncio.Event,
                         break
                     eoi = buf.find(JPEG_EOI, soi + 2)
                     if eoi == -1:
-                        # Trim garbage before SOI
                         buf = buf[soi:]
                         break
 
@@ -284,7 +301,7 @@ async def _stream_screenrecord(serial: str, stop_event: asyncio.Event,
                         frames_sent += 1
                     except Exception:
                         stop_event.set()
-                        return
+                        return True
 
         except Exception as e:
             logger.warning("screenrecord stream error for %s: %s", serial, e)
@@ -301,9 +318,23 @@ async def _stream_screenrecord(serial: str, stop_event: asyncio.Event,
             except (asyncio.TimeoutError, Exception):
                 pass
 
+        # Track consecutive zero-frame attempts
+        if frames_sent == 0:
+            consecutive_zero += 1
+            logger.warning("screenrecord produced 0 frames for %s (%d/%d)",
+                           serial, consecutive_zero, SCREENRECORD_ZERO_FRAME_LIMIT)
+            if consecutive_zero >= SCREENRECORD_ZERO_FRAME_LIMIT:
+                logger.warning("screenrecord not working for %s — falling back to screencap",
+                               serial)
+                return False
+        else:
+            consecutive_zero = 0
+
         if not stop_event.is_set():
             logger.info("Restarting screenrecord pipeline for %s", serial)
             await asyncio.sleep(0.3)
+
+    return True
 
 
 # ── WebSocket endpoint ───────────────────────────────────────────────────────
@@ -363,7 +394,19 @@ async def ws_mirror(websocket: WebSocket, serial: str):
     # ── Frame loop ────────────────────────────────────────────────────────────
     async def frame_loop() -> None:
         if use_streaming:
-            await _stream_screenrecord(serial, stop_event, websocket)
+            ok = await _stream_screenrecord(serial, phys_w, phys_h,
+                                            stop_event, websocket)
+            if not ok and not stop_event.is_set():
+                # screenrecord failed — fall back to screencap
+                logger.info("Falling back to screencap for %s", serial)
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "status",
+                        "message": "Switched to screencap mode (1 FPS)",
+                    }))
+                except Exception:
+                    return
+                await _screencap_loop(serial, stop_event, websocket)
         else:
             await _screencap_loop(serial, stop_event, websocket)
 
